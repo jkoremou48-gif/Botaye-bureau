@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Bötaye — Bureau</title>
+<meta name="theme-color" content="#1B4332" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<div id="app">
+
+  <section id="screen-loading" class="screen screen-center">
+    <div class="wheel-loader" aria-hidden="true">
+      <svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="42"/></svg>
+    </div>
+    <p class="loading-label">BÖTAYE</p>
+  </section>
+
+  <section id="screen-login" class="screen screen-center">
+    <div class="card card-form">
+      <p class="eyebrow">BÖTAYE</p>
+      <h1>Espace Bureau</h1>
+      <p class="subtitle">Connectez-vous pour gérer votre association.</p>
+      <form id="form-login">
+        <label>E-mail
+          <input type="email" name="email" required />
+        </label>
+        <label>Mot de passe
+          <input type="password" name="password" required />
+        </label>
+        <button type="submit" class="btn btn-primary">Se connecter</button>
+      </form>
+      <p class="lien-alternatif" id="lien-vers-inscription">Je n'ai pas encore de compte, m'inscrire avec un code</p>
+    </div>
+  </section>
+
+  <section id="screen-inscription" class="screen screen-center hidden">
+    <div class="card card-form">
+      <p class="eyebrow">Nouvelle association</p>
+      <h1>Inscrire mon association</h1>
+      <p class="subtitle">Saisissez le code reçu de votre coordination, puis les informations de votre association et de votre compte.</p>
+      <form id="form-inscription">
+        <label>Code de la coordination
+          <input type="text" name="code" required placeholder="Ex : BUR-XXXXXX" style="text-transform:uppercase;" />
+        </label>
+        <label>Nom de l'association
+          <input type="text" name="nomAssociation" required placeholder="Ex : Ressortissants de Bilikolyta à Kindia" />
+        </label>
+        <label>Ville de résidence
+          <input type="text" name="ville" required placeholder="Ex : Kindia" />
+        </label>
+        <hr style="margin:18px 0; border:none; border-top:1px solid #eee;" />
+        <label>Votre nom complet
+          <input type="text" name="nom" required />
+        </label>
+        <label>Téléphone
+          <input type="tel" name="telephone" required />
+        </label>
+        <label>E-mail (identifiant de connexion)
+          <input type="email" name="email" required />
+        </label>
+        <label>Mot de passe
+          <input type="password" name="password" required minlength="6" />
+        </label>
+        <p id="inscError" style="color:#c0392b; font-size:13px;"></p>
+        <button type="submit" class="btn btn-primary">Créer l'association et mon compte</button>
+      </form>
+      <p class="lien-alternatif" id="lien-retour-login">J'ai déjà un compte, me connecter</p>
+    </div>
+  </section>
+
+  <section id="screen-dashboard" class="screen hidden">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow" id="db-association-nom">—</p>
+        <h1 id="db-bureau-nom">—</h1>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end;">
+        <button id="btn-changer-mdp" class="btn btn-ghost-sm">Changer mon mot de passe</button>
+        <button id="btn-logout" class="btn btn-ghost">Déconnexion</button>
+      </div>
+    </header>
+
+    <nav class="tabs">
+      <button class="tab-btn active" data-tab="apercu">Aperçu</button>
+      <button class="tab-btn" data-tab="membres">Membres</button>
+      <button class="tab-btn" data-tab="cotisations">Cotisations</button>
+    </nav>
+
+    <div id="tab-apercu" class="tab-panel">
+      <div class="cards-grid">
+        <div class="stat-card">
+          <p class="stat-label">Solde de la caisse</p>
+          <p class="stat-value" id="stat-solde-caisse">—</p>
+        </div>
+        <div class="stat-card">
+          <p class="stat-label">Membres actifs</p>
+          <p class="stat-value" id="stat-nb-membres">—</p>
+        </div>
+        <div class="stat-card">
+          <p class="stat-label">Cotisations ce mois</p>
+          <p class="stat-value" id="stat-cotisations-mois">—</p>
+        </div>
+        <div class="stat-card">
+          <p class="stat-label">Membres à jour</p>
+          <p class="stat-value" id="stat-membres-a-jour">—</p>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-membres" class="tab-panel hidden">
+      <div class="list-header">
+        <h2>Membres</h2>
+        <button id="btn-nouveau-code-membre" class="btn btn-secondary btn-sm">+ Générer un code membre</button>
+      </div>
+      <input type="search" id="recherche-membres" placeholder="Rechercher un membre..." style="width:100%; padding:10px 12px; border:1px solid #ddd; border-radius:10px; margin-bottom:12px;" />
+      <div id="liste-membres" class="entity-list"></div>
+    </div>
+
+    <div id="tab-cotisations" class="tab-panel hidden">
+      <div class="list-header">
+        <h2>Cotisations</h2>
+        <button id="btn-nouvelle-cotisation" class="btn btn-secondary btn-sm">+ Enregistrer une cotisation</button>
+      </div>
+      <div id="liste-cotisations" class="entity-list"></div>
+    </div>
+
+  </section>
+
+</div>
+
+<div id="modal-overlay" class="modal-overlay hidden">
+  <div id="modal-content" class="modal-content"></div>
+</div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
