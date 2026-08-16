@@ -93,6 +93,7 @@
       <button class="tab-btn" data-tab="membres">Membres</button>
       <button class="tab-btn" data-tab="familles">Familles</button>
       <button class="tab-btn" data-tab="cotisations">Cotisations</button>
+      <button class="tab-btn" data-tab="social">Cas sociaux</button>
       <button class="tab-btn" data-tab="reaffectations">Réaffectations <span id="badge-reaffectations" class="badge badge-actif hidden"></span></button>
     </nav>
 
@@ -113,6 +114,10 @@
         <div class="stat-card">
           <p class="stat-label">Familles à jour</p>
           <p class="stat-value" id="stat-membres-a-jour">—</p>
+        </div>
+        <div class="stat-card">
+          <p class="stat-label">Cas sociaux en cours</p>
+          <p class="stat-value" id="stat-cas-en-cours">—</p>
         </div>
       </div>
     </div>
@@ -145,6 +150,15 @@
         <button id="btn-nouvelle-cotisation" class="btn btn-secondary btn-sm">+ Paiement libre</button>
       </div>
       <div id="liste-cotisations" class="entity-list"></div>
+    </div>
+
+    <div id="tab-social" class="tab-panel hidden">
+      <div class="list-header">
+        <h2>Cas sociaux</h2>
+        <button id="btn-nouveau-cas-social" class="btn btn-secondary btn-sm">+ Signaler un cas</button>
+      </div>
+      <p class="subtitle-sm">Seules les personnes déjà enregistrées (chef de famille ou membre déclaré) peuvent faire l'objet d'un cas social.</p>
+      <div id="liste-cas-sociaux" class="entity-list"></div>
     </div>
 
     <div id="tab-reaffectations" class="tab-panel hidden">
