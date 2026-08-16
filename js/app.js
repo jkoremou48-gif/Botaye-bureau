@@ -7,6 +7,7 @@ import {
 
 import { genererCode, formatDate, formatMontant, notifier } from "./utils.js";
 import { calculerAge, calculerQuotaMembre, obtenirReglesActives } from "./bareme.js";
+import { evaluerEligibiliteAssistance, genererReferenceCas } from "./casSociaux.js";
 
 const state = {
   currentUser: null,
@@ -17,6 +18,7 @@ const state = {
   familles: [],
   familyMembers: [],
   reaffectationsRecues: [],
+  socialCases: [],
   reglesActives: null,
   unsubscribers: [],
 };
@@ -231,7 +233,14 @@ async function lancerDashboard() {
       render();
     }
   );
-  state.unsubscribers.push(unsubMembres, unsubCotisations, unsubFamilles, unsubFamilyMembers, unsubReaffectations);
+  const unsubSocialCases = onSnapshot(
+    query(collection(db, "social_cases"), where("association_id", "==", state.associationId)),
+    (snap) => {
+      state.socialCases = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      render();
+    }
+  );
+  state.unsubscribers.push(unsubMembres, unsubCotisations, unsubFamilles, unsubFamilyMembers, unsubReaffectations, unsubSocialCases);
 }
 
 function render() {
@@ -240,6 +249,7 @@ function render() {
   renderFamilles();
   renderCotisations();
   renderReaffectations();
+  renderCasSociaux();
 }
 
 function renderApercu() {
@@ -269,6 +279,9 @@ function renderApercu() {
       .map((c) => c.famille_id)
   );
   document.getElementById("stat-membres-a-jour").textContent = famillesAyantPayeCeMois.size;
+
+  const casEnCours = state.socialCases.filter((c) => !["cloture", "rejete"].includes(c.statut)).length;
+  document.getElementById("stat-cas-en-cours").textContent = casEnCours;
 }
 
 // ---------- MEMBRES (comptes = chefs de famille ou en attente) ----------
@@ -1105,6 +1118,390 @@ function ouvrirModalIntegrationReaffectation(reaffectationId) {
         <div class="modal-actions"><button class="btn btn-primary" id="modal-fermer-code" style="flex:1;">Terminé</button></div>
       `);
       document.getElementById("modal-fermer-code").addEventListener("click", fermerModal);
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+}
+
+// ---------- CAS SOCIAUX ----------
+
+// Liste des personnes reconnues par l'application : chefs de famille inscrits
+// et personnes à charge actives déclarées. Rien en dehors de cette liste
+// ne peut faire l'objet d'un cas social (règle de reconnaissance).
+function personnesReconnues() {
+  const liste = [];
+  state.familles.forEach((f) => {
+    const chef = state.membres.find((m) => m.uid === f.chef_membre_id);
+    if (chef) {
+      liste.push({
+        type: "chef",
+        id: chef.uid,
+        nom: chef.nom,
+        familleId: f.id,
+        familleNom: f.nom_famille || chef.nom,
+      });
+    }
+    dependantsActifs(f.id).forEach((fm) => {
+      liste.push({
+        type: "dependant",
+        id: fm.id,
+        nom: fm.nom,
+        familleId: f.id,
+        familleNom: f.nom_famille || (chef ? chef.nom : "?"),
+      });
+    });
+  });
+  return liste;
+}
+
+const libellesCategorie = {
+  maladie: "Maladie",
+  deces: "Décès",
+  urgence: "Urgence",
+  education: "Scolarité / Éducation",
+  autre: "Autre",
+};
+const libellesStatutCas = {
+  signale: "Signalé",
+  evalue: "En évaluation",
+  propose: "Proposition en attente",
+  valide: "Validé",
+  rejete: "Rejeté",
+  execute: "Exécuté",
+  cloture: "Clôturé",
+};
+
+function renderCasSociaux() {
+  const container = document.getElementById("liste-cas-sociaux");
+  if (state.socialCases.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucun cas social enregistré pour l'instant.</p>`;
+    return;
+  }
+  const tri = [...state.socialCases].sort((a, b) => (b.date_creation?.toMillis?.() || 0) - (a.date_creation?.toMillis?.() || 0));
+  container.innerHTML = tri.map((c) => `
+    <div class="entity-card" data-cas-id="${c.id}" style="cursor:pointer;">
+      <div class="entity-card-top">
+        <div>
+          <p class="entity-nom">${c.beneficiaire_nom} <span style="font-weight:400; color:#777;">(${c.reference || ""})</span></p>
+          <p class="entity-sub">${libellesCategorie[c.categorie] || c.categorie} · ${c.famille_nom || ""} · ${formatDate(c.date_creation)}</p>
+        </div>
+        <span class="badge ${["cloture", "rejete"].includes(c.statut) ? "badge-actif" : "badge-erreur"}">${libellesStatutCas[c.statut] || c.statut}</span>
+      </div>
+    </div>
+  `).join("");
+
+  container.querySelectorAll("[data-cas-id]").forEach((card) => {
+    card.addEventListener("click", () => ouvrirModalCasSocial(card.dataset.casId));
+  });
+}
+
+document.getElementById("btn-nouveau-cas-social").addEventListener("click", () => {
+  const personnes = personnesReconnues();
+  if (personnes.length === 0) {
+    notifier("Aucune personne enregistrée dans une famille. L'application ne reconnaît que les personnes déjà déclarées.", "erreur");
+    return;
+  }
+  ouvrirModal(`
+    <h2>Signaler un cas social</h2>
+    <p class="subtitle-sm">Seules les personnes déjà enregistrées peuvent être sélectionnées.</p>
+    <form id="form-nouveau-cas">
+      <div class="field-row">
+        <label>Personne concernée</label>
+        <select name="personne" required>
+          <option value="">— Choisir —</option>
+          ${personnes.map((p) => `<option value="${p.type}|${p.id}|${p.familleId}">${p.nom} (${p.familleNom})</option>`).join("")}
+        </select>
+      </div>
+      <div class="field-row">
+        <label>Catégorie</label>
+        <select name="categorie" required>
+          <option value="maladie">Maladie</option>
+          <option value="deces">Décès</option>
+          <option value="urgence">Urgence</option>
+          <option value="education">Scolarité / Éducation</option>
+          <option value="autre">Autre</option>
+        </select>
+      </div>
+      <div class="field-row">
+        <label>Urgence</label>
+        <select name="urgence" required>
+          <option value="faible">Faible</option>
+          <option value="moyenne" selected>Moyenne</option>
+          <option value="haute">Haute</option>
+        </select>
+      </div>
+      <div class="field-row">
+        <label>Description</label>
+        <textarea name="description" rows="3" required></textarea>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Signaler</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-nouveau-cas").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const [type, id, familleId] = fd.get("personne").split("|");
+    const p = personnes.find((x) => x.type === type && x.id === id);
+    try {
+      await addDoc(collection(db, "social_cases"), {
+        association_id: state.associationId,
+        beneficiaire_type: type,
+        beneficiaire_id: id,
+        beneficiaire_nom: p ? p.nom : "",
+        famille_id: familleId,
+        famille_nom: p ? p.familleNom : "",
+        categorie: fd.get("categorie"),
+        urgence: fd.get("urgence"),
+        description: fd.get("description").trim(),
+        reference: genererReferenceCas(),
+        statut: "signale",
+        participations: {},
+        enregistre_par: state.currentUser.uid,
+        date_creation: serverTimestamp(),
+      });
+      notifier("Cas social signalé.", "succes");
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+});
+
+function ouvrirModalCasSocial(casId) {
+  const c = state.socialCases.find((x) => x.id === casId);
+  if (!c) return;
+
+  const tauxRetard = calculerTauxRetardFamille(c.famille_id);
+  const eligibilite = evaluerEligibiliteAssistance(c.famille_id, state.socialCases, tauxRetard);
+
+  let blocSuivant = "";
+
+  if (c.statut === "signale") {
+    blocSuivant = `
+      <form id="form-etape">
+        <p class="subtitle-sm">Passer à l'évaluation.</p>
+        <div class="field-row">
+          <label>Responsable de l'instruction</label>
+          <input type="text" name="responsable_nom" value="${state.currentUser.nom}" required />
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Fermer</button>
+          <button type="submit" class="btn btn-primary" style="flex:1;">Démarrer l'évaluation</button>
+        </div>
+      </form>
+    `;
+  } else if (c.statut === "evalue") {
+    blocSuivant = `
+      <form id="form-etape">
+        <p class="subtitle-sm">Proposer une aide.</p>
+        <div class="field-row">
+          <label>Montant proposé (GNF)</label>
+          <input type="number" name="montant_propose" min="0" required />
+        </div>
+        <div class="field-row">
+          <label>Nature de l'aide</label>
+          <input type="text" name="nature_propose" placeholder="Ex : Aide financière, don en nature..." required />
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Fermer</button>
+          <button type="submit" class="btn btn-primary" style="flex:1;">Soumettre la proposition</button>
+        </div>
+      </form>
+    `;
+  } else if (c.statut === "propose") {
+    const blocageActif = !eligibilite.eligible;
+    blocSuivant = `
+      ${blocageActif ? `
+        <div class="field-row" style="background:#fdecea; border-radius:10px; padding:10px;">
+          <p style="color:#c0392b; font-weight:600; margin:0;">Famille non éligible selon la règle du bureau</p>
+          <p class="subtitle-sm" style="margin:4px 0 0;">${eligibilite.motif}</p>
+        </div>
+      ` : ""}
+      <form id="form-etape">
+        <p class="subtitle-sm">Montant proposé : <strong>${formatMontant(c.montant_propose)}</strong> (${c.nature_propose || ""})</p>
+        ${blocageActif ? `
+          <div class="field-row">
+            <label style="display:flex; align-items:flex-start; gap:8px; font-weight:400;">
+              <input type="checkbox" name="derogation" style="margin-top:3px;" required />
+              <span>Je confirme, sous ma responsabilité, une dérogation malgré l'inéligibilité constatée.</span>
+            </label>
+          </div>
+        ` : ""}
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost-sm" id="btn-rejeter" style="flex:1;">Rejeter</button>
+          <button type="submit" class="btn btn-primary" style="flex:1;">Valider</button>
+        </div>
+      </form>
+    `;
+  } else if (c.statut === "valide") {
+    blocSuivant = `
+      <form id="form-etape">
+        <p class="subtitle-sm">Enregistrer l'exécution de l'aide.</p>
+        <div class="field-row">
+          <label>Montant réellement accordé (GNF)</label>
+          <input type="number" name="montant_accorde" min="0" value="${c.montant_propose || 0}" required />
+        </div>
+        <div class="field-row">
+          <label>Référence du justificatif</label>
+          <input type="text" name="justificatif_note" placeholder="Ex : Reçu n°, témoin, etc." />
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Fermer</button>
+          <button type="submit" class="btn btn-primary" style="flex:1;">Marquer comme exécuté</button>
+        </div>
+      </form>
+    `;
+  } else if (c.statut === "execute") {
+    blocSuivant = `
+      <form id="form-etape">
+        <p class="subtitle-sm">Clôturer le dossier.</p>
+        <div class="field-row">
+          <label>Résultat / motif de clôture</label>
+          <textarea name="resultat_cloture" rows="2" required></textarea>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Fermer</button>
+          <button type="submit" class="btn btn-primary" style="flex:1;">Clôturer</button>
+        </div>
+      </form>
+    `;
+  } else {
+    blocSuivant = `
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Fermer</button>
+      </div>
+    `;
+  }
+
+  ouvrirModal(`
+    <h2>${c.beneficiaire_nom} <span style="font-weight:400; color:#777; font-size:14px;">(${c.reference || ""})</span></h2>
+    <p class="subtitle-sm">${libellesCategorie[c.categorie] || c.categorie} · Urgence ${c.urgence} · Famille : ${c.famille_nom || "—"}</p>
+    <p style="margin:10px 0;">${c.description || ""}</p>
+    <div class="field-row"><label>Statut actuel</label><p>${libellesStatutCas[c.statut] || c.statut}</p></div>
+    <div class="field-row"><label>Taux de retard de paiement (12 mois, famille)</label><p>${tauxRetard} %</p></div>
+    <div class="field-row"><label>Taux d'absence aux cas sociaux (12 mois, famille)</label><p>${eligibilite.tauxAbsence !== null ? eligibilite.tauxAbsence + " %" : "Pas de données"}</p></div>
+    <hr style="margin:14px 0; border:none; border-top:1px solid #eee;" />
+    ${blocSuivant}
+    <hr style="margin:14px 0; border:none; border-top:1px solid #eee;" />
+    <button type="button" class="btn btn-ghost-sm" id="btn-gerer-presences" style="width:100%;">Enregistrer les présences des familles à ce cas</button>
+  `);
+
+  document.getElementById("modal-annuler")?.addEventListener("click", fermerModal);
+  document.getElementById("btn-gerer-presences")?.addEventListener("click", () => ouvrirModalPresencesCas(casId));
+
+  const btnRejeter = document.getElementById("btn-rejeter");
+  if (btnRejeter) {
+    btnRejeter.addEventListener("click", async () => {
+      try {
+        await updateDoc(doc(db, "social_cases", casId), {
+          statut: "rejete",
+          date_rejet: serverTimestamp(),
+        });
+        notifier("Cas rejeté.", "succes");
+        fermerModal();
+      } catch (err) {
+        notifier("Erreur : " + err.message, "erreur");
+      }
+    });
+  }
+
+  const form = document.getElementById("form-etape");
+  if (form) {
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      try {
+        if (c.statut === "signale") {
+          await updateDoc(doc(db, "social_cases", casId), {
+            statut: "evalue",
+            responsable_id: state.currentUser.uid,
+            responsable_nom: fd.get("responsable_nom"),
+            date_evaluation: serverTimestamp(),
+          });
+        } else if (c.statut === "evalue") {
+          await updateDoc(doc(db, "social_cases", casId), {
+            statut: "propose",
+            montant_propose: Number(fd.get("montant_propose")),
+            nature_propose: fd.get("nature_propose"),
+            date_proposition: serverTimestamp(),
+          });
+        } else if (c.statut === "propose") {
+          await updateDoc(doc(db, "social_cases", casId), {
+            statut: "valide",
+            derogation_eligibilite: !eligibilite.eligible,
+            date_validation: serverTimestamp(),
+          });
+        } else if (c.statut === "valide") {
+          await updateDoc(doc(db, "social_cases", casId), {
+            statut: "execute",
+            montant_accorde: Number(fd.get("montant_accorde")),
+            justificatif_note: fd.get("justificatif_note") || "",
+            date_execution: serverTimestamp(),
+          });
+        } else if (c.statut === "execute") {
+          await updateDoc(doc(db, "social_cases", casId), {
+            statut: "cloture",
+            resultat_cloture: fd.get("resultat_cloture"),
+            date_cloture: serverTimestamp(),
+          });
+        }
+        notifier("Dossier mis à jour.", "succes");
+        fermerModal();
+      } catch (err) {
+        notifier("Erreur : " + err.message, "erreur");
+      }
+    });
+  }
+}
+
+function ouvrirModalPresencesCas(casId) {
+  const c = state.socialCases.find((x) => x.id === casId);
+  if (!c) return;
+  const participations = c.participations || {};
+
+  const lignes = state.familles.map((f) => {
+    const chef = state.membres.find((m) => m.uid === f.chef_membre_id);
+    const valeur = participations[f.id] || "";
+    return `
+      <div class="field-row" data-famille-id="${f.id}">
+        <label>${f.nom_famille || (chef ? chef.nom : "Famille")}</label>
+        <select data-select-presence>
+          <option value="" ${valeur === "" ? "selected" : ""}>Non concerné / pas de donnée</option>
+          <option value="present" ${valeur === "present" ? "selected" : ""}>Présent</option>
+          <option value="absent" ${valeur === "absent" ? "selected" : ""}>Absent</option>
+        </select>
+      </div>
+    `;
+  }).join("");
+
+  ouvrirModal(`
+    <h2>Présences — ${c.reference || ""}</h2>
+    <p class="subtitle-sm">Indiquez, pour chaque famille attendue, si elle était présente ou absente à ce cas social.</p>
+    <form id="form-presences">
+      ${lignes || '<p class="empty-state">Aucune famille enregistrée.</p>'}
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Enregistrer</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", () => ouvrirModalCasSocial(casId));
+  document.getElementById("form-presences").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const nouvellesParticipations = {};
+    document.querySelectorAll("[data-famille-id]").forEach((ligne) => {
+      const val = ligne.querySelector("[data-select-presence]").value;
+      if (val) nouvellesParticipations[ligne.dataset.familleId] = val;
+    });
+    try {
+      await updateDoc(doc(db, "social_cases", casId), { participations: nouvellesParticipations });
+      notifier("Présences enregistrées.", "succes");
+      ouvrirModalCasSocial(casId);
     } catch (err) {
       notifier("Erreur : " + err.message, "erreur");
     }
