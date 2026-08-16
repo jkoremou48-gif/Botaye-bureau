@@ -11,6 +11,16 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/style.css" />
+<style>
+  .hidden { display: none !important; }
+  .lien-bouton {
+    background: none; border: none; padding: 8px;
+    font-family: inherit; font-size: 14px; color: #1B4332;
+    text-decoration: underline; cursor: pointer;
+    user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+    touch-action: manipulation; display: block; margin: 0 auto; text-align: center;
+  }
+</style>
 </head>
 <body>
 
@@ -23,7 +33,7 @@
     <p class="loading-label">BÖTAYE</p>
   </section>
 
-  <section id="screen-login" class="screen screen-center">
+  <section id="screen-login" class="screen screen-center hidden">
     <div class="card card-form">
       <p class="eyebrow">BÖTAYE</p>
       <h1>Espace Bureau</h1>
@@ -37,7 +47,7 @@
         </label>
         <button type="submit" class="btn btn-primary">Se connecter</button>
       </form>
-      <p class="lien-alternatif" id="lien-vers-inscription">Je n'ai pas encore de compte, m'inscrire avec un code</p>
+      <button type="button" id="lien-vers-inscription" class="lien-bouton">Je n'ai pas encore de compte, m'inscrire avec un code</button>
     </div>
   </section>
 
@@ -72,7 +82,7 @@
         <p id="inscError" style="color:#c0392b; font-size:13px;"></p>
         <button type="submit" class="btn btn-primary">Créer l'association et mon compte</button>
       </form>
-      <p class="lien-alternatif" id="lien-retour-login">J'ai déjà un compte, me connecter</p>
+      <button type="button" id="lien-retour-login" class="lien-bouton">J'ai déjà un compte, me connecter</button>
     </div>
   </section>
 
@@ -177,6 +187,30 @@
   <div id="modal-content" class="modal-content"></div>
 </div>
 
+<script>
+  window.addEventListener('load', function () {
+    setTimeout(async function () {
+      var loading = document.getElementById('screen-loading');
+      if (loading && !loading.classList.contains('hidden')) {
+        try {
+          if ('serviceWorker' in navigator) {
+            var regs = await navigator.serviceWorker.getRegistrations();
+            for (var i = 0; i < regs.length; i++) { await regs[i].unregister(); }
+          }
+          if ('caches' in window) {
+            var noms = await caches.keys();
+            for (var j = 0; j < noms.length; j++) { await caches.delete(noms[j]); }
+          }
+        } catch (e) { /* ignore */ }
+        var diag = document.createElement('div');
+        diag.style.cssText = "position:fixed;bottom:12px;left:12px;right:12px;background:#a94442;color:white;padding:10px 14px;border-radius:8px;font-size:12px;font-family:sans-serif;z-index:9999;text-align:center;";
+        diag.textContent = "Le chargement a échoué. Cache technique vidé — appuyez ici pour recharger.";
+        diag.addEventListener('click', function () { location.reload(true); });
+        document.body.appendChild(diag);
+      }
+    }, 6000);
+  });
+</script>
 <script type="module" src="js/app.js"></script>
 <script>
   if ('serviceWorker' in navigator) {
