@@ -91,6 +91,7 @@
     <nav class="tabs">
       <button class="tab-btn active" data-tab="apercu">Aperçu</button>
       <button class="tab-btn" data-tab="membres">Membres</button>
+      <button class="tab-btn" data-tab="familles">Familles</button>
       <button class="tab-btn" data-tab="cotisations">Cotisations</button>
     </nav>
 
@@ -120,14 +121,27 @@
         <h2>Membres</h2>
         <button id="btn-nouveau-code-membre" class="btn btn-secondary btn-sm">+ Générer un code membre</button>
       </div>
+      <p class="subtitle-sm">Touchez un membre pour compléter son profil (date de naissance, sexe, situation matrimoniale) nécessaire au calcul du quota.</p>
       <input type="search" id="recherche-membres" placeholder="Rechercher un membre..." style="width:100%; padding:10px 12px; border:1px solid #ddd; border-radius:10px; margin-bottom:12px;" />
       <div id="liste-membres" class="entity-list"></div>
+    </div>
+
+    <div id="tab-familles" class="tab-panel hidden">
+      <div class="list-header">
+        <h2>Familles</h2>
+        <button id="btn-nouvelle-famille" class="btn btn-secondary btn-sm">+ Créer une famille</button>
+      </div>
+      <p class="subtitle-sm">Touchez une famille pour gérer ses membres et voir le détail du quota.</p>
+      <div id="liste-familles" class="entity-list"></div>
     </div>
 
     <div id="tab-cotisations" class="tab-panel hidden">
       <div class="list-header">
         <h2>Cotisations</h2>
-        <button id="btn-nouvelle-cotisation" class="btn btn-secondary btn-sm">+ Enregistrer une cotisation</button>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px;">
+        <button id="btn-encaisser-quota-famille" class="btn btn-primary btn-sm">+ Encaisser le quota d'une famille</button>
+        <button id="btn-nouvelle-cotisation" class="btn btn-secondary btn-sm">+ Paiement libre</button>
       </div>
       <div id="liste-cotisations" class="entity-list"></div>
     </div>
