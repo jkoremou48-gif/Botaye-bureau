@@ -93,6 +93,7 @@
       <button class="tab-btn" data-tab="membres">Membres</button>
       <button class="tab-btn" data-tab="familles">Familles</button>
       <button class="tab-btn" data-tab="cotisations">Cotisations</button>
+      <button class="tab-btn" data-tab="reaffectations">Réaffectations <span id="badge-reaffectations" class="badge badge-actif hidden"></span></button>
     </nav>
 
     <div id="tab-apercu" class="tab-panel">
@@ -110,7 +111,7 @@
           <p class="stat-value" id="stat-cotisations-mois">—</p>
         </div>
         <div class="stat-card">
-          <p class="stat-label">Membres à jour</p>
+          <p class="stat-label">Familles à jour</p>
           <p class="stat-value" id="stat-membres-a-jour">—</p>
         </div>
       </div>
@@ -144,6 +145,14 @@
         <button id="btn-nouvelle-cotisation" class="btn btn-secondary btn-sm">+ Paiement libre</button>
       </div>
       <div id="liste-cotisations" class="entity-list"></div>
+    </div>
+
+    <div id="tab-reaffectations" class="tab-panel hidden">
+      <div class="list-header">
+        <h2>Réaffectations reçues</h2>
+      </div>
+      <p class="subtitle-sm">Personnes envoyées par la coordination depuis une autre association, à intégrer dans votre association.</p>
+      <div id="liste-reaffectations" class="entity-list"></div>
     </div>
 
   </section>
