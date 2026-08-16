@@ -6,6 +6,7 @@ import {
 } from "./firebase-config.js";
 
 import { genererCode, formatDate, formatMontant, notifier } from "./utils.js";
+import { calculerAge, calculerQuotaMembre, obtenirReglesActives } from "./bareme.js";
 
 const state = {
   currentUser: null,
@@ -13,6 +14,8 @@ const state = {
   association: null,
   membres: [],
   cotisations: [],
+  familles: [],
+  reglesActives: null,
   unsubscribers: [],
 };
 let creationEnCours = false;
@@ -94,8 +97,6 @@ document.getElementById("form-inscription").addEventListener("submit", async (e)
 
     const coordinationId = codeSnap.data().coordination_id;
 
-    // On crée d'abord le compte (authentification) avant toute écriture Firestore,
-    // pour respecter les règles de sécurité qui exigent un utilisateur connecté.
     const cred = await createUserWithEmailAndPassword(auth, email, password);
 
     const assocRef = await addDoc(collection(db, "associations"), {
@@ -192,6 +193,8 @@ async function lancerDashboard() {
   }
   document.getElementById("db-bureau-nom").textContent = state.currentUser.nom;
 
+  state.reglesActives = await obtenirReglesActives(state.associationId);
+
   const unsubMembres = onSnapshot(
     query(collection(db, "users"), where("association_id", "==", state.associationId), where("role", "==", "membre")),
     (snap) => {
@@ -206,12 +209,20 @@ async function lancerDashboard() {
       render();
     }
   );
-  state.unsubscribers.push(unsubMembres, unsubCotisations);
+  const unsubFamilles = onSnapshot(
+    query(collection(db, "families"), where("association_id", "==", state.associationId)),
+    (snap) => {
+      state.familles = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      render();
+    }
+  );
+  state.unsubscribers.push(unsubMembres, unsubCotisations, unsubFamilles);
 }
 
 function render() {
   renderApercu();
   renderMembres();
+  renderFamilles();
   renderCotisations();
 }
 
@@ -244,6 +255,8 @@ function renderApercu() {
   document.getElementById("stat-membres-a-jour").textContent = membresAyantCotiseCeMois.size;
 }
 
+// ---------- MEMBRES ----------
+
 function renderMembres() {
   const recherche = (document.getElementById("recherche-membres").value || "").toLowerCase();
   let membres = state.membres;
@@ -258,20 +271,242 @@ function renderMembres() {
   }
   container.innerHTML = membres.map((m) => {
     const totalCotise = state.cotisations.filter((c) => c.membre_id === m.uid).reduce((s, c) => s + Number(c.montant || 0), 0);
+    const famille = state.familles.find((f) => f.id === m.family_id);
+    const age = calculerAge(m.date_naissance);
+    const profilIncomplet = age === null || !m.sexe;
     return `
-      <div class="entity-card">
+      <div class="entity-card" data-membre-id="${m.uid}" style="cursor:pointer;">
         <div class="entity-card-top">
           <div>
             <p class="entity-nom">${m.nom}</p>
             <p class="entity-sub">${m.telephone || ""} · ${m.residence || ""}</p>
+            <p class="entity-sub" style="margin-top:2px;">
+              ${age !== null ? age + " ans" : '<span style="color:#c0392b;">Âge non renseigné</span>'}
+              ${famille ? " · Famille : " + (famille.nom_famille || "Sans nom") : ""}
+              ${profilIncomplet ? ' · <span style="color:#c0392b;">Profil incomplet</span>' : ""}
+            </p>
           </div>
           <span class="badge badge-actif">${formatMontant(totalCotise)}</span>
         </div>
       </div>
     `;
   }).join("");
+
+  container.querySelectorAll("[data-membre-id]").forEach((card) => {
+    card.addEventListener("click", () => ouvrirModalProfilMembre(card.dataset.membreId));
+  });
 }
 document.getElementById("recherche-membres").addEventListener("input", renderMembres);
+
+function ouvrirModalProfilMembre(membreId) {
+  const m = state.membres.find((x) => x.uid === membreId);
+  if (!m) return;
+  const famille = state.familles.find((f) => f.id === m.family_id);
+
+  ouvrirModal(`
+    <h2>${m.nom}</h2>
+    <p class="subtitle-sm">Complétez le profil pour permettre le calcul automatique du quota (barème BÖTAYE).</p>
+    <form id="form-profil-membre">
+      <div class="field-row">
+        <label>Date de naissance</label>
+        <input type="date" name="date_naissance" value="${m.date_naissance || ""}" required />
+      </div>
+      <div class="field-row">
+        <label>Sexe</label>
+        <select name="sexe" required>
+          <option value="">—</option>
+          <option value="M" ${m.sexe === "M" ? "selected" : ""}>Masculin</option>
+          <option value="F" ${m.sexe === "F" ? "selected" : ""}>Féminin</option>
+        </select>
+      </div>
+      <div class="field-row">
+        <label>Situation matrimoniale</label>
+        <select name="situation_matrimoniale" required>
+          <option value="celibataire" ${m.situation_matrimoniale !== "marie" ? "selected" : ""}>Célibataire</option>
+          <option value="marie" ${m.situation_matrimoniale === "marie" ? "selected" : ""}>Marié(e), conjoint(e) au foyer</option>
+        </select>
+      </div>
+      <p class="subtitle-sm">${famille ? "Famille actuelle : " + (famille.nom_famille || "Sans nom") + " (gestion depuis l'onglet Familles)" : "Aucune famille rattachée pour l'instant."}</p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Enregistrer</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-profil-membre").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      await updateDoc(doc(db, "users", membreId), {
+        date_naissance: fd.get("date_naissance"),
+        sexe: fd.get("sexe"),
+        situation_matrimoniale: fd.get("situation_matrimoniale"),
+      });
+      notifier("Profil mis à jour.", "succes");
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+}
+
+// ---------- FAMILLES ----------
+
+function renderFamilles() {
+  const container = document.getElementById("liste-familles");
+  if (state.familles.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucune famille enregistrée pour l'instant.</p>`;
+    return;
+  }
+  container.innerHTML = state.familles.map((f) => {
+    const chef = state.membres.find((m) => m.uid === f.chef_membre_id);
+    const membresFamille = state.membres.filter((m) => m.family_id === f.id);
+    let total = 0;
+    membresFamille.forEach((m) => {
+      const q = calculerQuotaMembre(m, state.reglesActives);
+      if (q.applique) total += q.montant;
+    });
+    return `
+      <div class="entity-card" data-famille-id="${f.id}" style="cursor:pointer;">
+        <div class="entity-card-top">
+          <div>
+            <p class="entity-nom">${f.nom_famille || "Famille " + (chef ? chef.nom : "?")}</p>
+            <p class="entity-sub">Chef : ${chef ? chef.nom : "—"} · ${membresFamille.length} membre(s)</p>
+          </div>
+          <span class="badge badge-actif">${formatMontant(total)}</span>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  container.querySelectorAll("[data-famille-id]").forEach((card) => {
+    card.addEventListener("click", () => ouvrirModalFamille(card.dataset.familleId));
+  });
+}
+
+document.getElementById("btn-nouvelle-famille").addEventListener("click", () => {
+  if (state.membres.length === 0) {
+    notifier("Aucun membre disponible pour désigner un chef de famille.", "erreur");
+    return;
+  }
+  ouvrirModal(`
+    <h2>Créer une famille</h2>
+    <form id="form-nouvelle-famille">
+      <div class="field-row">
+        <label>Nom de la famille (optionnel)</label>
+        <input type="text" name="nom_famille" placeholder="Ex : Famille Camara" />
+      </div>
+      <div class="field-row">
+        <label>Chef de famille</label>
+        <select name="chef_membre_id" required>
+          ${state.membres.map((m) => `<option value="${m.uid}">${m.nom}${m.family_id ? " (déjà dans une famille)" : ""}</option>`).join("")}
+        </select>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Créer</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-nouvelle-famille").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const chefId = fd.get("chef_membre_id");
+    try {
+      const familleRef = await addDoc(collection(db, "families"), {
+        association_id: state.associationId,
+        nom_famille: fd.get("nom_famille").trim(),
+        chef_membre_id: chefId,
+        date_creation: serverTimestamp(),
+      });
+      await updateDoc(doc(db, "users", chefId), { family_id: familleRef.id });
+      notifier("Famille créée.", "succes");
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+});
+
+function ouvrirModalFamille(familleId) {
+  const f = state.familles.find((x) => x.id === familleId);
+  if (!f) return;
+  const chef = state.membres.find((m) => m.uid === f.chef_membre_id);
+  const membresFamille = state.membres.filter((m) => m.family_id === f.id);
+  const membresDisponibles = state.membres.filter((m) => m.family_id !== f.id);
+
+  let total = 0;
+  const lignesMembres = membresFamille.map((m) => {
+    const q = calculerQuotaMembre(m, state.reglesActives);
+    if (q.applique) total += q.montant;
+    const estChef = m.uid === f.chef_membre_id;
+    return `
+      <div class="entity-card">
+        <div class="entity-card-top">
+          <div>
+            <p class="entity-nom">${m.nom} ${estChef ? "(chef)" : ""}</p>
+            <p class="entity-sub">${q.formule}</p>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span class="badge badge-actif">${q.applique ? formatMontant(q.montant) : "—"}</span>
+            ${!estChef ? `<button type="button" class="btn btn-ghost-sm btn-retirer-membre" data-uid="${m.uid}">Retirer</button>` : ""}
+          </div>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  ouvrirModal(`
+    <h2>${f.nom_famille || "Famille " + (chef ? chef.nom : "?")}</h2>
+    <p class="subtitle-sm">Chef de famille : ${chef ? chef.nom : "—"}</p>
+    <div style="margin:14px 0;">${lignesMembres || '<p class="empty-state">Aucun membre pour l’instant.</p>'}</div>
+    <p style="font-weight:600;">Total quota famille : ${formatMontant(total)}</p>
+    <hr style="margin:16px 0; border:none; border-top:1px solid #eee;" />
+    <form id="form-ajouter-membre-famille">
+      <div class="field-row">
+        <label>Ajouter un membre à cette famille</label>
+        <select name="membre_id" required>
+          <option value="">— Choisir —</option>
+          ${membresDisponibles.map((m) => `<option value="${m.uid}">${m.nom}${m.family_id ? " (sera retiré de son autre famille)" : ""}</option>`).join("")}
+        </select>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Fermer</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Ajouter</button>
+      </div>
+    </form>
+  `);
+
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.querySelectorAll(".btn-retirer-membre").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try {
+        await updateDoc(doc(db, "users", btn.dataset.uid), { family_id: null });
+        notifier("Membre retiré de la famille.", "succes");
+        ouvrirModalFamille(familleId);
+      } catch (err) {
+        notifier("Erreur : " + err.message, "erreur");
+      }
+    });
+  });
+  document.getElementById("form-ajouter-membre-famille").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const membreId = fd.get("membre_id");
+    if (!membreId) return;
+    try {
+      await updateDoc(doc(db, "users", membreId), { family_id: familleId });
+      notifier("Membre ajouté à la famille.", "succes");
+      ouvrirModalFamille(familleId);
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+}
+
+// ---------- COTISATIONS ----------
 
 function renderCotisations() {
   const container = document.getElementById("liste-cotisations");
@@ -279,6 +514,13 @@ function renderCotisations() {
     container.innerHTML = `<p class="empty-state">Aucune cotisation enregistrée pour l'instant.</p>`;
     return;
   }
+  const libellesType = {
+    quota: "Quota (barème)",
+    volontaire: "Contribution volontaire",
+    fixe: "Cotisation fixe",
+    occasionnelle: "Cotisation occasionnelle",
+    libre: "Paiement libre",
+  };
   const tri = [...state.cotisations].sort((a, b) => (b.date?.toMillis?.() || 0) - (a.date?.toMillis?.() || 0));
   container.innerHTML = tri.slice(0, 50).map((c) => {
     const membre = state.membres.find((m) => m.uid === c.membre_id);
@@ -287,7 +529,7 @@ function renderCotisations() {
         <div class="entity-card-top">
           <div>
             <p class="entity-nom">${membre ? membre.nom : c.membre_nom || "Membre"}</p>
-            <p class="entity-sub">${c.type === "occasionnelle" ? "Cotisation occasionnelle" : "Cotisation fixe"} · ${formatDate(c.date)}</p>
+            <p class="entity-sub">${libellesType[c.type] || c.type} · ${formatDate(c.date)}</p>
           </div>
           <span class="badge badge-actif">${formatMontant(c.montant)}</span>
         </div>
@@ -296,6 +538,7 @@ function renderCotisations() {
   }).join("");
 }
 
+// Paiement libre (correction, cas particulier, cotisation hors barème)
 document.getElementById("btn-nouvelle-cotisation").addEventListener("click", () => {
   const membresActifs = state.membres.filter((m) => m.statut === "actif");
   if (membresActifs.length === 0) {
@@ -303,19 +546,13 @@ document.getElementById("btn-nouvelle-cotisation").addEventListener("click", () 
     return;
   }
   ouvrirModal(`
-    <h2>Enregistrer une cotisation</h2>
+    <h2>Paiement libre</h2>
+    <p class="subtitle-sm">À utiliser pour une correction ou un cas particulier hors barème. Pour la cotisation normale, utilisez « Encaisser le quota d'une famille ».</p>
     <form id="form-cotisation">
       <div class="field-row">
         <label>Membre</label>
         <select name="membre_id" required>
           ${membresActifs.map((m) => `<option value="${m.uid}">${m.nom}</option>`).join("")}
-        </select>
-      </div>
-      <div class="field-row">
-        <label>Type</label>
-        <select name="type" required>
-          <option value="fixe">Cotisation fixe (mensuelle)</option>
-          <option value="occasionnelle">Cotisation occasionnelle</option>
         </select>
       </div>
       <div class="field-row">
@@ -339,18 +576,156 @@ document.getElementById("btn-nouvelle-cotisation").addEventListener("click", () 
         association_id: state.associationId,
         membre_id: membreId,
         membre_nom: membre ? membre.nom : "",
-        type: fd.get("type"),
+        type: "libre",
         montant: Number(fd.get("montant")),
         enregistre_par: state.currentUser.uid,
         date: serverTimestamp(),
       });
-      notifier("Cotisation enregistrée.", "succes");
+      notifier("Paiement enregistré.", "succes");
       fermerModal();
     } catch (err) {
       notifier("Erreur : " + err.message, "erreur");
     }
   });
 });
+
+// Encaissement du quota calculé pour une famille entière (flux principal du guide)
+document.getElementById("btn-encaisser-quota-famille").addEventListener("click", () => {
+  if (state.familles.length === 0) {
+    notifier("Aucune famille enregistrée. Créez d'abord une famille.", "erreur");
+    return;
+  }
+  ouvrirModal(`
+    <h2>Encaisser le quota d'une famille</h2>
+    <form id="form-choix-famille">
+      <div class="field-row">
+        <label>Famille</label>
+        <select name="famille_id" required>
+          ${state.familles.map((f) => {
+            const chef = state.membres.find((m) => m.uid === f.chef_membre_id);
+            return `<option value="${f.id}">${f.nom_famille || "Famille " + (chef ? chef.nom : "?")}</option>`;
+          }).join("")}
+        </select>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Continuer</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-choix-famille").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    ouvrirModalEncaissementFamille(fd.get("famille_id"));
+  });
+});
+
+function ouvrirModalEncaissementFamille(familleId) {
+  const f = state.familles.find((x) => x.id === familleId);
+  const membresFamille = state.membres.filter((m) => m.family_id === f.id);
+
+  if (membresFamille.length === 0) {
+    notifier("Cette famille n'a aucun membre rattaché.", "erreur");
+    return;
+  }
+
+  const periodeParDefaut = new Date().toISOString().slice(0, 7); // YYYY-MM
+
+  const lignes = membresFamille.map((m) => {
+    const q = calculerQuotaMembre(m, state.reglesActives);
+    if (q.applique) {
+      return `
+        <div class="field-row" data-ligne data-membre-id="${m.uid}" data-type="quota" data-montant="${q.montant}">
+          <label>${m.nom} — ${q.formule}</label>
+          <p style="font-weight:600;">${formatMontant(q.montant)}</p>
+        </div>
+      `;
+    }
+    // Profil incomplet ou contribution volontaire → saisie manuelle possible
+    return `
+      <div class="field-row" data-ligne data-membre-id="${m.uid}" data-type="volontaire">
+        <label>${m.nom} — ${q.formule}</label>
+        <input type="number" min="0" placeholder="Montant (laisser vide si aucun paiement)" data-input-volontaire />
+      </div>
+    `;
+  }).join("");
+
+  ouvrirModal(`
+    <h2>${f.nom_famille || "Famille"}</h2>
+    <form id="form-encaissement-famille">
+      <div class="field-row">
+        <label>Période</label>
+        <input type="month" name="periode" value="${periodeParDefaut}" required />
+      </div>
+      <hr style="margin:12px 0; border:none; border-top:1px solid #eee;" />
+      ${lignes}
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Encaisser</button>
+      </div>
+    </form>
+  `);
+
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-encaissement-famille").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const periode = fd.get("periode");
+    const lignesEl = document.querySelectorAll("[data-ligne]");
+
+    const operations = [];
+    lignesEl.forEach((ligne) => {
+      const membreId = ligne.dataset.membreId;
+      const membre = state.membres.find((m) => m.uid === membreId);
+      const type = ligne.dataset.type;
+      if (type === "quota") {
+        operations.push({
+          membre_id: membreId,
+          membre_nom: membre ? membre.nom : "",
+          type: "quota",
+          montant: Number(ligne.dataset.montant),
+        });
+      } else {
+        const input = ligne.querySelector("[data-input-volontaire]");
+        const val = Number(input.value);
+        if (val > 0) {
+          operations.push({
+            membre_id: membreId,
+            membre_nom: membre ? membre.nom : "",
+            type: "volontaire",
+            montant: val,
+          });
+        }
+      }
+    });
+
+    if (operations.length === 0) {
+      notifier("Aucun montant à encaisser.", "erreur");
+      return;
+    }
+
+    try {
+      for (const op of operations) {
+        await addDoc(collection(db, "cotisations"), {
+          association_id: state.associationId,
+          famille_id: familleId,
+          periode,
+          membre_id: op.membre_id,
+          membre_nom: op.membre_nom,
+          type: op.type,
+          montant: op.montant,
+          enregistre_par: state.currentUser.uid,
+          date: serverTimestamp(),
+        });
+      }
+      notifier("Quota de la famille encaissé.", "succes");
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+}
 
 document.getElementById("btn-nouveau-code-membre").addEventListener("click", async () => {
   const code = genererCode("MBR");
