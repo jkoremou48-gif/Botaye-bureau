@@ -16,6 +16,7 @@ const state = {
   cotisations: [],
   familles: [],
   familyMembers: [],
+  reaffectationsRecues: [],
   reglesActives: null,
   unsubscribers: [],
 };
@@ -219,7 +220,18 @@ async function lancerDashboard() {
       render();
     }
   );
-  state.unsubscribers.push(unsubMembres, unsubCotisations, unsubFamilles, unsubFamilyMembers);
+  const unsubReaffectations = onSnapshot(
+    query(
+      collection(db, "reaffectations"),
+      where("association_destination_id", "==", state.associationId),
+      where("statut", "==", "transmis")
+    ),
+    (snap) => {
+      state.reaffectationsRecues = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      render();
+    }
+  );
+  state.unsubscribers.push(unsubMembres, unsubCotisations, unsubFamilles, unsubFamilyMembers, unsubReaffectations);
 }
 
 function render() {
@@ -227,6 +239,7 @@ function render() {
   renderMembres();
   renderFamilles();
   renderCotisations();
+  renderReaffectations();
 }
 
 function renderApercu() {
@@ -566,7 +579,7 @@ function calculerTauxRetardFamille(familleId) {
     const cle = d.toISOString().slice(0, 7);
     if (periodesPayees.has(cle)) moisPayesSur12++;
   }
-  return Math.round((1 - moisPayesSur12 / 12) * 100); // % de retard estimé
+  return Math.round((1 - moisPayesSur12 / 12) * 100);
 }
 
 function ouvrirModalRetraitDependant(dependantId, familleId) {
@@ -934,6 +947,169 @@ document.getElementById("btn-nouveau-code-membre").addEventListener("click", asy
     notifier("Erreur : " + err.message, "erreur");
   }
 });
+
+// ---------- RÉAFFECTATIONS REÇUES ----------
+
+const libellesMotif = {
+  voyage: "Voyage",
+  demenagement: "Déménagement définitif",
+};
+
+function renderReaffectations() {
+  const badge = document.getElementById("badge-reaffectations");
+  if (state.reaffectationsRecues.length > 0) {
+    badge.textContent = state.reaffectationsRecues.length;
+    badge.classList.remove("hidden");
+  } else {
+    badge.classList.add("hidden");
+  }
+
+  const container = document.getElementById("liste-reaffectations");
+  if (state.reaffectationsRecues.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucune personne à intégrer pour l'instant.</p>`;
+    return;
+  }
+
+  container.innerHTML = state.reaffectationsRecues.map((r) => `
+    <div class="entity-card" data-reaffectation-id="${r.id}" style="cursor:pointer;">
+      <div class="entity-card-top">
+        <div>
+          <p class="entity-nom">${r.nom}</p>
+          <p class="entity-sub">En provenance de : ${r.association_origine_nom || "—"} · ${libellesMotif[r.motif] || r.motif}</p>
+        </div>
+        <span class="badge badge-erreur">À intégrer</span>
+      </div>
+    </div>
+  `).join("");
+
+  container.querySelectorAll("[data-reaffectation-id]").forEach((card) => {
+    card.addEventListener("click", () => ouvrirModalIntegrationReaffectation(card.dataset.reaffectationId));
+  });
+}
+
+function ouvrirModalIntegrationReaffectation(reaffectationId) {
+  const r = state.reaffectationsRecues.find((x) => x.id === reaffectationId);
+  if (!r) return;
+  const h = r.historique_estime || {};
+
+  ouvrirModal(`
+    <h2>${r.nom}</h2>
+    <p class="subtitle-sm">Envoyé par : ${r.association_origine_nom || "—"} (${libellesMotif[r.motif] || r.motif})</p>
+    <div style="margin:14px 0;">
+      <div class="field-row"><label>Date de naissance</label><p>${r.date_naissance || "—"}</p></div>
+      <div class="field-row"><label>Sexe</label><p>${r.sexe === "M" ? "Masculin" : r.sexe === "F" ? "Féminin" : "—"}</p></div>
+      <div class="field-row"><label>Situation matrimoniale</label><p>${r.situation_matrimoniale === "marie" ? "Marié(e)" : "Célibataire"}</p></div>
+      <div class="field-row"><label>Retard de paiement estimé (famille d'origine)</label><p>${h.taux_retard_paiement_famille_pourcent != null ? h.taux_retard_paiement_famille_pourcent + " %" : "—"}</p></div>
+      <div class="field-row"><label>Fréquentation des cas sociaux</label><p>${h.frequentation_cas_sociaux_pourcent != null ? h.frequentation_cas_sociaux_pourcent + " %" : "Non disponible (module à venir)"}</p></div>
+    </div>
+    <hr style="margin:16px 0; border:none; border-top:1px solid #eee;" />
+    <p class="subtitle-sm" style="font-weight:600;">Comment intégrer cette personne ?</p>
+    <div class="modal-actions" style="flex-direction:column; gap:8px;">
+      <button type="button" class="btn btn-secondary" id="btn-rattacher-famille-existante" style="width:100%;">Rattacher à une famille existante</button>
+      <button type="button" class="btn btn-secondary" id="btn-devient-chef" style="width:100%;">Devient chef d'une nouvelle famille</button>
+      <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="width:100%;">Annuler</button>
+    </div>
+  `);
+
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+
+  document.getElementById("btn-rattacher-famille-existante").addEventListener("click", () => {
+    if (state.familles.length === 0) {
+      notifier("Aucune famille existante dans votre association.", "erreur");
+      return;
+    }
+    ouvrirModal(`
+      <h2>Rattacher ${r.nom}</h2>
+      <form id="form-rattacher">
+        <div class="field-row">
+          <label>Famille</label>
+          <select name="famille_id" required>
+            ${state.familles.map((f) => {
+              const chef = state.membres.find((m) => m.uid === f.chef_membre_id);
+              return `<option value="${f.id}">${f.nom_famille || "Famille " + (chef ? chef.nom : "?")}</option>`;
+            }).join("")}
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Retour</button>
+          <button type="submit" class="btn btn-primary" style="flex:1;">Rattacher</button>
+        </div>
+      </form>
+    `);
+    document.getElementById("modal-annuler").addEventListener("click", () => ouvrirModalIntegrationReaffectation(reaffectationId));
+    document.getElementById("form-rattacher").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const familleId = fd.get("famille_id");
+      try {
+        await addDoc(collection(db, "family_members"), {
+          association_id: state.associationId,
+          family_id: familleId,
+          nom: r.nom,
+          date_naissance: r.date_naissance || "",
+          sexe: r.sexe || "",
+          situation_matrimoniale: r.situation_matrimoniale || "celibataire",
+          statut: "actif",
+          origine_reaffectation_id: reaffectationId,
+          date_creation: serverTimestamp(),
+        });
+        await updateDoc(doc(db, "reaffectations", reaffectationId), {
+          statut: "traite",
+          date_traitement: serverTimestamp(),
+          integre_comme: "dependant",
+          integre_dans_famille_id: familleId,
+        });
+        notifier(`${r.nom} a été intégré(e) à la famille.`, "succes");
+        fermerModal();
+      } catch (err) {
+        notifier("Erreur : " + err.message, "erreur");
+      }
+    });
+  });
+
+  document.getElementById("btn-devient-chef").addEventListener("click", async () => {
+    try {
+      const nouvelleFamilleRef = await addDoc(collection(db, "families"), {
+        association_id: state.associationId,
+        nom_famille: r.nom,
+        chef_membre_id: null,
+        chef_nom_prevu: r.nom,
+        en_attente_chef: true,
+        statut: "active",
+        date_creation: serverTimestamp(),
+      });
+
+      const code = genererCode("MBR");
+      await setDoc(doc(db, "codes_parrainage", code), {
+        type: "membre",
+        association_id: state.associationId,
+        coordination_id: state.currentUser.coordination_id,
+        proprietaire_id: state.currentUser.uid,
+        family_id_cible: nouvelleFamilleRef.id,
+        actif: true,
+        date_creation: serverTimestamp(),
+      });
+
+      await updateDoc(doc(db, "reaffectations", reaffectationId), {
+        statut: "traite",
+        date_traitement: serverTimestamp(),
+        integre_comme: "chef",
+        integre_dans_famille_id: nouvelleFamilleRef.id,
+      });
+
+      notifier("Nouvelle famille créée.", "succes");
+      ouvrirModal(`
+        <h2>Code généré pour ${r.nom}</h2>
+        <p class="subtitle-sm">Transmettez ce code à cette personne pour qu'elle crée son propre compte sur l'application Membre.</p>
+        <div class="code-display">${code}</div>
+        <div class="modal-actions"><button class="btn btn-primary" id="modal-fermer-code" style="flex:1;">Terminé</button></div>
+      `);
+      document.getElementById("modal-fermer-code").addEventListener("click", fermerModal);
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+}
 
 document.querySelectorAll(".tab-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
