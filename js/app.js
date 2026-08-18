@@ -19,6 +19,7 @@ const state = {
   familyMembers: [],
   reaffectationsRecues: [],
   socialCases: [],
+  communications: [],
   reglesActives: null,
   unsubscribers: [],
 };
@@ -240,7 +241,16 @@ async function lancerDashboard() {
       render();
     }
   );
-  state.unsubscribers.push(unsubMembres, unsubCotisations, unsubFamilles, unsubFamilyMembers, unsubReaffectations, unsubSocialCases);
+  const unsubCommunications = onSnapshot(
+    query(collection(db, "communications"), where("coordination_id", "==", state.currentUser.coordination_id)),
+    (snap) => {
+      state.communications = snap.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .filter((c) => !c.association_id || c.association_id === state.associationId);
+      renderCommunications();
+    }
+  );
+  state.unsubscribers.push(unsubMembres, unsubCotisations, unsubFamilles, unsubFamilyMembers, unsubReaffectations, unsubSocialCases, unsubCommunications);
 }
 
 function render() {
@@ -250,6 +260,29 @@ function render() {
   renderCotisations();
   renderReaffectations();
   renderCasSociaux();
+}
+
+// ---------- COMMUNICATIONS (reçues de la coordination) ----------
+
+function renderCommunications() {
+  const container = document.getElementById("liste-communications");
+  if (!container) return;
+  if (state.communications.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucun message reçu pour l'instant.</p>`;
+    return;
+  }
+  const tri = [...state.communications].sort((a, b) => (b.date_creation?.toMillis?.() || 0) - (a.date_creation?.toMillis?.() || 0));
+  container.innerHTML = tri.map((c) => `
+    <div class="entity-card">
+      <div class="entity-card-top">
+        <div>
+          <p class="entity-nom">${c.association_id ? "Message pour votre association" : "Message pour toutes les associations"}</p>
+          <p class="entity-sub">${formatDate(c.date_creation)} · ${c.auteur_nom || "Coordination"}</p>
+          <p style="margin-top:6px;">${c.message}</p>
+        </div>
+      </div>
+    </div>
+  `).join("");
 }
 
 function renderApercu() {
