@@ -19,7 +19,7 @@ const state = {
   familyMembers: [],
   reaffectationsRecues: [],
   socialCases: [],
-  communications: [],
+  bureauUtilisateurs: [],
   reglesActives: null,
   unsubscribers: [],
 };
@@ -30,6 +30,82 @@ function showScreen(id) {
   screens.forEach((s) => document.getElementById(s).classList.toggle("hidden", s !== id));
 }
 
+// ---------- ACCÈS BUREAU (Président / Secrétaire général / Gestionnaire financier) ----------
+
+const libellesSousRole = {
+  president: "Président",
+  secretaire_general: "Secrétaire général",
+  gestionnaire_financier: "Gestionnaire financier",
+};
+
+const PERMISSIONS = {
+  president: {
+    membres: "lecture", familles: "lecture", cotisations: "lecture",
+    reaffectations: "lecture", cas_sociaux: "arbitrage", utilisateurs: "gerer",
+  },
+  secretaire_general: {
+    membres: "gerer", familles: "gerer", cotisations: "aucun",
+    reaffectations: "gerer", cas_sociaux: "instruire", utilisateurs: "aucun",
+  },
+  gestionnaire_financier: {
+    membres: "lecture", familles: "lecture", cotisations: "gerer",
+    reaffectations: "aucun", cas_sociaux: "aucun", utilisateurs: "aucun",
+  },
+};
+
+function sousRoleActuel() {
+  return state.currentUser?.sous_role || "president";
+}
+function permission(module) {
+  return PERMISSIONS[sousRoleActuel()]?.[module] || "aucun";
+}
+function casSocialActionAutorisee(statutCas) {
+  const sousRole = sousRoleActuel();
+  if (sousRole === "president") return statutCas === "propose";
+  if (sousRole === "secretaire_general") return ["signale", "evalue", "valide", "execute"].includes(statutCas);
+  return false;
+}
+
+function appliquerPermissionsInterface() {
+  const gatingOnglets = {
+    cotisations: permission("cotisations") === "aucun",
+    reaffectations: permission("reaffectations") === "aucun",
+    "cas-sociaux": permission("cas_sociaux") === "aucun",
+    utilisateurs: permission("utilisateurs") === "aucun",
+  };
+
+  Object.entries(gatingOnglets).forEach(([tab, doitCacher]) => {
+    const btn = document.querySelector(`.tab-btn[data-tab="${tab}"]`);
+    const panel = document.getElementById(`tab-${tab}`);
+    if (btn) btn.classList.toggle("hidden", doitCacher);
+    if (panel && doitCacher) panel.classList.add("hidden");
+  });
+
+  const btnActifCache = document.querySelector(".tab-btn.active.hidden");
+  if (btnActifCache) {
+    const premierVisible = [...document.querySelectorAll(".tab-btn")].find((b) => !b.classList.contains("hidden"));
+    if (premierVisible) premierVisible.click();
+  }
+
+  const btnNouvelleFamille = document.getElementById("btn-nouvelle-famille");
+  if (btnNouvelleFamille) btnNouvelleFamille.classList.toggle("hidden", permission("familles") !== "gerer");
+
+  const btnNouvelleCotisation = document.getElementById("btn-nouvelle-cotisation");
+  if (btnNouvelleCotisation) btnNouvelleCotisation.classList.toggle("hidden", permission("cotisations") !== "gerer");
+
+  const btnEncaisser = document.getElementById("btn-encaisser-quota-famille");
+  if (btnEncaisser) btnEncaisser.classList.toggle("hidden", permission("cotisations") !== "gerer");
+
+  const btnCodeMembre = document.getElementById("btn-nouveau-code-membre");
+  if (btnCodeMembre) btnCodeMembre.classList.toggle("hidden", permission("membres") !== "gerer");
+
+  const btnNouveauCas = document.getElementById("btn-nouveau-cas-social");
+  if (btnNouveauCas) btnNouveauCas.classList.toggle("hidden", permission("cas_sociaux") === "aucun");
+
+  const btnNouvelAcces = document.getElementById("btn-nouvel-acces-bureau");
+  if (btnNouvelAcces) btnNouvelAcces.classList.toggle("hidden", permission("utilisateurs") !== "gerer");
+}
+
 function demarrer() {
   showScreen("screen-loading");
   onAuthStateChanged(auth, async (user) => {
@@ -37,6 +113,12 @@ function demarrer() {
     if (user) {
       const userSnap = await getDoc(doc(db, "users", user.uid));
       if (userSnap.exists() && userSnap.data().role === "bureau") {
+        if (userSnap.data().statut === "inactif") {
+          notifier("Cet accès a été désactivé. Contactez le président de votre association.", "erreur");
+          await signOut(auth);
+          showScreen("screen-login");
+          return;
+        }
         state.currentUser = { uid: user.uid, ...userSnap.data() };
         state.associationId = userSnap.data().association_id;
         await lancerDashboard();
@@ -109,6 +191,7 @@ document.getElementById("form-inscription").addEventListener("submit", async (e)
 
     const userData = {
       role: "bureau",
+      sous_role: "president",
       nom, telephone, email,
       association_id: assocRef.id,
       coordination_id: coordinationId,
@@ -118,7 +201,7 @@ document.getElementById("form-inscription").addEventListener("submit", async (e)
     await setDoc(doc(db, "users", cred.user.uid), userData);
     await updateDoc(codeRef, { actif: false, utilise_par: cred.user.uid });
 
-    notifier("Association créée avec succès.", "succes");
+    notifier("Association créée avec succès. Vous êtes enregistré comme Président.", "succes");
     state.currentUser = { uid: cred.user.uid, ...userData };
     state.associationId = assocRef.id;
     creationEnCours = false;
@@ -191,7 +274,10 @@ async function lancerDashboard() {
     state.association = assocSnap.data();
     document.getElementById("db-association-nom").textContent = state.association.nom;
   }
-  document.getElementById("db-bureau-nom").textContent = state.currentUser.nom;
+  document.getElementById("db-bureau-nom").textContent =
+    `${state.currentUser.nom} (${libellesSousRole[sousRoleActuel()]})`;
+
+  appliquerPermissionsInterface();
 
   state.reglesActives = await obtenirReglesActives(state.associationId);
 
@@ -241,16 +327,17 @@ async function lancerDashboard() {
       render();
     }
   );
-  const unsubCommunications = onSnapshot(
-    query(collection(db, "communications"), where("coordination_id", "==", state.currentUser.coordination_id)),
+  const unsubUtilisateursBureau = onSnapshot(
+    query(collection(db, "users"), where("association_id", "==", state.associationId), where("role", "==", "bureau")),
     (snap) => {
-      state.communications = snap.docs
-        .map((d) => ({ id: d.id, ...d.data() }))
-        .filter((c) => !c.association_id || c.association_id === state.associationId);
-      renderCommunications();
+      state.bureauUtilisateurs = snap.docs.map((d) => ({ uid: d.id, ...d.data() }));
+      renderUtilisateursBureau();
     }
   );
-  state.unsubscribers.push(unsubMembres, unsubCotisations, unsubFamilles, unsubFamilyMembers, unsubReaffectations, unsubSocialCases, unsubCommunications);
+  state.unsubscribers.push(
+    unsubMembres, unsubCotisations, unsubFamilles, unsubFamilyMembers,
+    unsubReaffectations, unsubSocialCases, unsubUtilisateursBureau
+  );
 }
 
 function render() {
@@ -260,29 +347,6 @@ function render() {
   renderCotisations();
   renderReaffectations();
   renderCasSociaux();
-}
-
-// ---------- COMMUNICATIONS (reçues de la coordination) ----------
-
-function renderCommunications() {
-  const container = document.getElementById("liste-communications");
-  if (!container) return;
-  if (state.communications.length === 0) {
-    container.innerHTML = `<p class="empty-state">Aucun message reçu pour l'instant.</p>`;
-    return;
-  }
-  const tri = [...state.communications].sort((a, b) => (b.date_creation?.toMillis?.() || 0) - (a.date_creation?.toMillis?.() || 0));
-  container.innerHTML = tri.map((c) => `
-    <div class="entity-card">
-      <div class="entity-card-top">
-        <div>
-          <p class="entity-nom">${c.association_id ? "Message pour votre association" : "Message pour toutes les associations"}</p>
-          <p class="entity-sub">${formatDate(c.date_creation)} · ${c.auteur_nom || "Coordination"}</p>
-          <p style="margin-top:6px;">${c.message}</p>
-        </div>
-      </div>
-    </div>
-  `).join("");
 }
 
 function renderApercu() {
@@ -361,6 +425,25 @@ document.getElementById("recherche-membres").addEventListener("input", renderMem
 function ouvrirModalProfilMembre(membreId) {
   const m = state.membres.find((x) => x.uid === membreId);
   if (!m) return;
+
+  const peutModifier = permission("membres") === "gerer";
+
+  if (!peutModifier) {
+    ouvrirModal(`
+      <h2>${m.nom}</h2>
+      <p class="subtitle-sm">Consultation seule — la modification du profil est réservée au Secrétaire général.</p>
+      <div class="field-row"><label>Téléphone</label><p>${m.telephone || "—"}</p></div>
+      <div class="field-row"><label>Résidence</label><p>${m.residence || "—"}</p></div>
+      <div class="field-row"><label>Date de naissance</label><p>${m.date_naissance || "—"}</p></div>
+      <div class="field-row"><label>Sexe</label><p>${m.sexe === "M" ? "Masculin" : m.sexe === "F" ? "Féminin" : "—"}</p></div>
+      <div class="field-row"><label>Situation matrimoniale</label><p>${m.situation_matrimoniale === "marie" ? "Marié(e)" : "Célibataire"}</p></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-primary" id="modal-annuler" style="flex:1;">Fermer</button>
+      </div>
+    `);
+    document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+    return;
+  }
 
   ouvrirModal(`
     <h2>${m.nom}</h2>
@@ -458,6 +541,7 @@ function renderFamilles() {
 }
 
 document.getElementById("btn-nouvelle-famille").addEventListener("click", () => {
+  if (permission("familles") !== "gerer") return;
   const chefsDisponibles = state.membres.filter((m) => !state.familles.some((f) => f.chef_membre_id === m.uid));
   if (chefsDisponibles.length === 0) {
     notifier("Aucun membre disponible pour devenir chef de famille. Générez d'abord un code membre.", "erreur");
@@ -510,6 +594,7 @@ function ouvrirModalFamille(familleId) {
   if (!f) return;
   const chef = state.membres.find((m) => m.uid === f.chef_membre_id);
   const dependants = dependantsActifs(f.id);
+  const peutGerer = permission("familles") === "gerer";
 
   const ligneChef = chef ? (() => {
     const q = calculerQuotaMembre(chef, state.reglesActives);
@@ -537,7 +622,7 @@ function ouvrirModalFamille(familleId) {
           </div>
           <div style="display:flex; align-items:center; gap:8px;">
             <span class="badge badge-actif">${q.applique ? formatMontant(q.montant) : "—"}</span>
-            <button type="button" class="btn btn-ghost-sm btn-retirer-dependant" data-id="${fm.id}">Retirer</button>
+            ${peutGerer ? `<button type="button" class="btn btn-ghost-sm btn-retirer-dependant" data-id="${fm.id}">Retirer</button>` : ""}
           </div>
         </div>
       </div>
@@ -551,6 +636,7 @@ function ouvrirModalFamille(familleId) {
     ${ligneChef}
     <h3 style="margin-top:14px; font-size:14px;">Personnes à charge</h3>
     <div>${lignesDependants || '<p class="empty-state">Aucune personne déclarée.</p>'}</div>
+    ${peutGerer ? `
     <hr style="margin:16px 0; border:none; border-top:1px solid #eee;" />
     <form id="form-ajouter-dependant">
       <p class="subtitle-sm">Déclarer un nouveau membre de cette famille</p>
@@ -582,9 +668,16 @@ function ouvrirModalFamille(familleId) {
         <button type="submit" class="btn btn-primary" style="flex:1;">Ajouter</button>
       </div>
     </form>
+    ` : `
+    <div class="modal-actions" style="margin-top:16px;">
+      <button type="button" class="btn btn-primary" id="modal-annuler" style="flex:1;">Fermer</button>
+    </div>
+    `}
   `);
 
   document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+
+  if (!peutGerer) return;
 
   document.querySelectorAll(".btn-retirer-dependant").forEach((btn) => {
     btn.addEventListener("click", () => ouvrirModalRetraitDependant(btn.dataset.id, familleId));
@@ -792,6 +885,7 @@ function renderCotisations() {
 }
 
 document.getElementById("btn-nouvelle-cotisation").addEventListener("click", () => {
+  if (permission("cotisations") !== "gerer") return;
   const membresActifs = state.membres.filter((m) => m.statut === "actif");
   if (membresActifs.length === 0) {
     notifier("Aucun membre actif pour enregistrer un paiement.", "erreur");
@@ -844,6 +938,7 @@ document.getElementById("btn-nouvelle-cotisation").addEventListener("click", () 
 });
 
 document.getElementById("btn-encaisser-quota-famille").addEventListener("click", () => {
+  if (permission("cotisations") !== "gerer") return;
   if (state.familles.length === 0) {
     notifier("Aucune famille enregistrée.", "erreur");
     return;
@@ -972,6 +1067,7 @@ function ouvrirModalEncaissementFamille(familleId) {
 }
 
 document.getElementById("btn-nouveau-code-membre").addEventListener("click", async () => {
+  if (permission("membres") !== "gerer") return;
   const code = genererCode("MBR");
   try {
     await setDoc(doc(db, "codes_parrainage", code), {
@@ -1037,6 +1133,7 @@ function ouvrirModalIntegrationReaffectation(reaffectationId) {
   const r = state.reaffectationsRecues.find((x) => x.id === reaffectationId);
   if (!r) return;
   const h = r.historique_estime || {};
+  const peutIntegrer = permission("reaffectations") === "gerer";
 
   ouvrirModal(`
     <h2>${r.nom}</h2>
@@ -1049,15 +1146,24 @@ function ouvrirModalIntegrationReaffectation(reaffectationId) {
       <div class="field-row"><label>Fréquentation des cas sociaux</label><p>${h.frequentation_cas_sociaux_pourcent != null ? h.frequentation_cas_sociaux_pourcent + " %" : "Non disponible (module à venir)"}</p></div>
     </div>
     <hr style="margin:16px 0; border:none; border-top:1px solid #eee;" />
+    ${peutIntegrer ? `
     <p class="subtitle-sm" style="font-weight:600;">Comment intégrer cette personne ?</p>
     <div class="modal-actions" style="flex-direction:column; gap:8px;">
       <button type="button" class="btn btn-secondary" id="btn-rattacher-famille-existante" style="width:100%;">Rattacher à une famille existante</button>
       <button type="button" class="btn btn-secondary" id="btn-devient-chef" style="width:100%;">Devient chef d'une nouvelle famille</button>
       <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="width:100%;">Annuler</button>
     </div>
+    ` : `
+    <p class="subtitle-sm">Seul le Secrétaire général peut intégrer ce dossier.</p>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-primary" id="modal-annuler" style="flex:1;">Fermer</button>
+    </div>
+    `}
   `);
 
   document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+
+  if (!peutIntegrer) return;
 
   document.getElementById("btn-rattacher-famille-existante").addEventListener("click", () => {
     if (state.familles.length === 0) {
@@ -1159,9 +1265,6 @@ function ouvrirModalIntegrationReaffectation(reaffectationId) {
 
 // ---------- CAS SOCIAUX ----------
 
-// Liste des personnes reconnues par l'application : chefs de famille inscrits
-// et personnes à charge actives déclarées. Rien en dehors de cette liste
-// ne peut faire l'objet d'un cas social (règle de reconnaissance).
 function personnesReconnues() {
   const liste = [];
   state.familles.forEach((f) => {
@@ -1230,6 +1333,10 @@ function renderCasSociaux() {
 }
 
 document.getElementById("btn-nouveau-cas-social").addEventListener("click", () => {
+  if (permission("cas_sociaux") === "aucun" || sousRoleActuel() !== "secretaire_general") {
+    notifier("Seul le Secrétaire général peut signaler un nouveau cas social.", "erreur");
+    return;
+  }
   const personnes = personnesReconnues();
   if (personnes.length === 0) {
     notifier("Aucune personne enregistrée dans une famille. L'application ne reconnaît que les personnes déjà déclarées.", "erreur");
@@ -1311,10 +1418,19 @@ function ouvrirModalCasSocial(casId) {
 
   const tauxRetard = calculerTauxRetardFamille(c.famille_id);
   const eligibilite = evaluerEligibiliteAssistance(c.famille_id, state.socialCases, tauxRetard);
+  const peutAgir = casSocialActionAutorisee(c.statut);
 
   let blocSuivant = "";
 
-  if (c.statut === "signale") {
+  if (!peutAgir && !["cloture", "rejete"].includes(c.statut)) {
+    const roleAttendu = c.statut === "propose" ? "au Président" : "au Secrétaire général";
+    blocSuivant = `
+      <p class="subtitle-sm">Ce dossier attend une action ${roleAttendu}.</p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Fermer</button>
+      </div>
+    `;
+  } else if (c.statut === "signale") {
     blocSuivant = `
       <form id="form-etape">
         <p class="subtitle-sm">Passer à l'évaluation.</p>
@@ -1420,12 +1536,16 @@ function ouvrirModalCasSocial(casId) {
     <div class="field-row"><label>Taux d'absence aux cas sociaux (12 mois, famille)</label><p>${eligibilite.tauxAbsence !== null ? eligibilite.tauxAbsence + " %" : "Pas de données"}</p></div>
     <hr style="margin:14px 0; border:none; border-top:1px solid #eee;" />
     ${blocSuivant}
+    ${peutAgir ? `
     <hr style="margin:14px 0; border:none; border-top:1px solid #eee;" />
     <button type="button" class="btn btn-ghost-sm" id="btn-gerer-presences" style="width:100%;">Enregistrer les présences des familles à ce cas</button>
+    ` : ""}
   `);
 
   document.getElementById("modal-annuler")?.addEventListener("click", fermerModal);
   document.getElementById("btn-gerer-presences")?.addEventListener("click", () => ouvrirModalPresencesCas(casId));
+
+  if (!peutAgir) return;
 
   const btnRejeter = document.getElementById("btn-rejeter");
   if (btnRejeter) {
@@ -1467,6 +1587,7 @@ function ouvrirModalCasSocial(casId) {
           await updateDoc(doc(db, "social_cases", casId), {
             statut: "valide",
             derogation_eligibilite: !eligibilite.eligible,
+            valide_par: state.currentUser.uid,
             date_validation: serverTimestamp(),
           });
         } else if (c.statut === "valide") {
@@ -1540,6 +1661,120 @@ function ouvrirModalPresencesCas(casId) {
     }
   });
 }
+
+// ---------- UTILISATEURS / BUREAU (accès Président / Secrétaire / Gestionnaire) ----------
+
+function renderUtilisateursBureau() {
+  const container = document.getElementById("liste-utilisateurs-bureau");
+  if (!container) return;
+  if (state.bureauUtilisateurs.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucun accès enregistré.</p>`;
+    return;
+  }
+  const tri = [...state.bureauUtilisateurs].sort((a, b) => ((a.sous_role || "president") === "president" ? -1 : 1));
+  container.innerHTML = tri.map((u) => {
+    const sousRole = u.sous_role || "president";
+    const estMoi = u.uid === state.currentUser.uid;
+    return `
+      <div class="entity-card">
+        <div class="entity-card-top">
+          <div>
+            <p class="entity-nom">${u.nom}${estMoi ? " (vous)" : ""}</p>
+            <p class="entity-sub">${u.telephone || ""} · ${u.email || ""}</p>
+          </div>
+          <span class="badge ${u.statut === "actif" ? "badge-actif" : "badge-erreur"}">${libellesSousRole[sousRole] || sousRole}</span>
+        </div>
+        ${sousRole !== "president" && !estMoi ? `
+          <div class="modal-actions" style="margin-top:8px;">
+            <button type="button" class="btn btn-ghost-sm btn-toggle-statut-bureau" data-id="${u.uid}" data-statut="${u.statut}" style="flex:1;">
+              ${u.statut === "actif" ? "Désactiver cet accès" : "Réactiver cet accès"}
+            </button>
+          </div>
+        ` : ""}
+      </div>
+    `;
+  }).join("");
+
+  container.querySelectorAll(".btn-toggle-statut-bureau").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (permission("utilisateurs") !== "gerer") return;
+      const nouveauStatut = btn.dataset.statut === "actif" ? "inactif" : "actif";
+      try {
+        await updateDoc(doc(db, "users", btn.dataset.id), { statut: nouveauStatut });
+        notifier(nouveauStatut === "actif" ? "Accès réactivé." : "Accès désactivé.", "succes");
+      } catch (err) {
+        notifier("Erreur : " + err.message, "erreur");
+      }
+    });
+  });
+}
+
+document.getElementById("btn-nouvel-acces-bureau")?.addEventListener("click", () => {
+  if (permission("utilisateurs") !== "gerer") return;
+  ouvrirModal(`
+    <h2>Nouvel accès Bureau</h2>
+    <p class="subtitle-sm">Créez un accès pour le Secrétaire général ou le Gestionnaire financier de votre association.</p>
+    <form id="form-nouvel-acces-bureau">
+      <div class="field-row">
+        <label>Nom complet</label>
+        <input type="text" name="nom" required />
+      </div>
+      <div class="field-row">
+        <label>Téléphone</label>
+        <input type="tel" name="telephone" required />
+      </div>
+      <div class="field-row">
+        <label>E-mail</label>
+        <input type="email" name="email" required />
+      </div>
+      <div class="field-row">
+        <label>Mot de passe provisoire (6 caractères min)</label>
+        <input type="password" name="password" minlength="6" required />
+      </div>
+      <div class="field-row">
+        <label>Accès</label>
+        <select name="sous_role" required>
+          <option value="secretaire_general">Secrétaire général</option>
+          <option value="gestionnaire_financier">Gestionnaire financier</option>
+        </select>
+      </div>
+      <p id="accesError" style="color:#c0392b; font-size:13px;"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Créer l'accès</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-nouvel-acces-bureau").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const errEl = document.getElementById("accesError");
+    errEl.textContent = "";
+    const fd = new FormData(e.target);
+    const nom = fd.get("nom").trim();
+    const telephone = fd.get("telephone").trim();
+    const email = fd.get("email").trim();
+    const password = fd.get("password");
+    const sousRoleChoisi = fd.get("sous_role");
+
+    try {
+      const uid = await creerCompteSecondaire(email, password);
+      await setDoc(doc(db, "users", uid), {
+        role: "bureau",
+        sous_role: sousRoleChoisi,
+        nom, telephone, email,
+        association_id: state.associationId,
+        coordination_id: state.currentUser.coordination_id,
+        statut: "actif",
+        date_creation: serverTimestamp(),
+      });
+      notifier("Accès créé avec succès.", "succes");
+      fermerModal();
+    } catch (err) {
+      errEl.textContent = "Erreur : " + err.message;
+    }
+  });
+});
 
 document.querySelectorAll(".tab-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
