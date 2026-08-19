@@ -105,6 +105,7 @@
       <button class="tab-btn" data-tab="cotisations">Cotisations</button>
       <button class="tab-btn" data-tab="social">Cas sociaux</button>
       <button class="tab-btn" data-tab="reaffectations">Réaffectations <span id="badge-reaffectations" class="badge badge-actif hidden"></span></button>
+      <button class="tab-btn" data-tab="utilisateurs">Utilisateurs</button>
     </nav>
 
     <div id="tab-apercu" class="tab-panel">
@@ -177,6 +178,15 @@
       </div>
       <p class="subtitle-sm">Personnes envoyées par la coordination depuis une autre association, à intégrer dans votre association.</p>
       <div id="liste-reaffectations" class="entity-list"></div>
+    </div>
+
+    <div id="tab-utilisateurs" class="tab-panel hidden">
+      <div class="list-header">
+        <h2>Accès Bureau</h2>
+        <button id="btn-nouvel-acces-bureau" class="btn btn-secondary btn-sm">+ Nouvel accès</button>
+      </div>
+      <p class="subtitle-sm">Le Président peut créer et gérer les accès du Secrétaire général et du Gestionnaire financier.</p>
+      <div id="liste-utilisateurs-bureau" class="entity-list"></div>
     </div>
 
   </section>
