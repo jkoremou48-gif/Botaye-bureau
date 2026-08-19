@@ -70,7 +70,7 @@ function appliquerPermissionsInterface() {
   const gatingOnglets = {
     cotisations: permission("cotisations") === "aucun",
     reaffectations: permission("reaffectations") === "aucun",
-    "cas-sociaux": permission("cas_sociaux") === "aucun",
+    social: permission("cas_sociaux") === "aucun",
     utilisateurs: permission("utilisateurs") === "aucun",
   };
 
