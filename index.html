@@ -99,7 +99,7 @@
     </header>
 
     <nav class="tabs">
-      <button class="tab-btn active" data-tab="apercu">Aperçu</button>
+      <button class="tab-btn active" data-tab="apercu" id="tab-btn-apercu">Aperçu</button>
       <button class="tab-btn" data-tab="membres">Membres</button>
       <button class="tab-btn" data-tab="familles">Familles</button>
       <button class="tab-btn" data-tab="cotisations">Cotisations</button>
@@ -109,28 +109,7 @@
     </nav>
 
     <div id="tab-apercu" class="tab-panel">
-      <div class="cards-grid">
-        <div class="stat-card">
-          <p class="stat-label">Solde de la caisse</p>
-          <p class="stat-value" id="stat-solde-caisse">—</p>
-        </div>
-        <div class="stat-card">
-          <p class="stat-label">Membres actifs</p>
-          <p class="stat-value" id="stat-nb-membres">—</p>
-        </div>
-        <div class="stat-card">
-          <p class="stat-label">Cotisations ce mois</p>
-          <p class="stat-value" id="stat-cotisations-mois">—</p>
-        </div>
-        <div class="stat-card">
-          <p class="stat-label">Familles à jour</p>
-          <p class="stat-value" id="stat-membres-a-jour">—</p>
-        </div>
-        <div class="stat-card">
-          <p class="stat-label">Cas sociaux en cours</p>
-          <p class="stat-value" id="stat-cas-en-cours">—</p>
-        </div>
-      </div>
+      <div id="apercu-container"></div>
     </div>
 
     <div id="tab-membres" class="tab-panel hidden">
