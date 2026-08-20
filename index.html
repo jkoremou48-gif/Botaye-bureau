@@ -20,6 +20,7 @@
     user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
     touch-action: manipulation; display: block; margin: 0 auto; text-align: center;
   }
+  .tabs { overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch; }
 </style>
 </head>
 <body>
@@ -106,6 +107,10 @@
       <button class="tab-btn" data-tab="social">Cas sociaux</button>
       <button class="tab-btn" data-tab="reaffectations">Réaffectations <span id="badge-reaffectations" class="badge badge-actif hidden"></span></button>
       <button class="tab-btn" data-tab="recommandations">Recommandations</button>
+      <button class="tab-btn" data-tab="reunions">Réunions</button>
+      <button class="tab-btn" data-tab="finances">Finances</button>
+      <button class="tab-btn" data-tab="decisions">Décisions</button>
+      <button class="tab-btn" data-tab="discipline">Discipline</button>
       <button class="tab-btn" data-tab="utilisateurs">Utilisateurs</button>
     </nav>
 
@@ -166,6 +171,43 @@
       </div>
       <p class="subtitle-sm">Échanges avec la coordination, puis diffusion au bureau et aux chefs de famille.</p>
       <div id="liste-recommandations" class="entity-list"></div>
+    </div>
+
+    <div id="tab-reunions" class="tab-panel hidden">
+      <div class="list-header">
+        <h2>Réunions</h2>
+        <button id="btn-nouvelle-reunion" class="btn btn-secondary btn-sm">+ Planifier une réunion</button>
+      </div>
+      <p class="subtitle-sm">Préparation, convocation, présences, compte rendu.</p>
+      <div id="liste-reunions" class="entity-list"></div>
+    </div>
+
+    <div id="tab-finances" class="tab-panel hidden">
+      <div class="list-header">
+        <h2>Finances — Dépenses</h2>
+        <button id="btn-nouvelle-depense" class="btn btn-secondary btn-sm">+ Nouvelle dépense</button>
+      </div>
+      <p class="subtitle-sm" id="seuil-info">Seuil de double validation : —</p>
+      <button id="btn-modifier-seuil" class="btn btn-ghost-sm" style="margin-bottom:14px;">Modifier le seuil (président)</button>
+      <div id="liste-depenses" class="entity-list"></div>
+    </div>
+
+    <div id="tab-decisions" class="tab-panel hidden">
+      <div class="list-header">
+        <h2>Décisions officielles</h2>
+        <button id="btn-nouvelle-decision" class="btn btn-secondary btn-sm">+ Nouvelle décision</button>
+      </div>
+      <p class="subtitle-sm">Préparées par le secrétaire général, validées et publiées par le président.</p>
+      <div id="liste-decisions" class="entity-list"></div>
+    </div>
+
+    <div id="tab-discipline" class="tab-panel hidden">
+      <div class="list-header">
+        <h2>Discipline</h2>
+        <button id="btn-nouveau-dossier-discipline" class="btn btn-secondary btn-sm">+ Signaler un dossier</button>
+      </div>
+      <p class="subtitle-sm">Module confidentiel — accessible uniquement au président et au secrétaire général.</p>
+      <div id="liste-discipline" class="entity-list"></div>
     </div>
 
     <div id="tab-utilisateurs" class="tab-panel hidden">
