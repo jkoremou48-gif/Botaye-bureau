@@ -20,6 +20,7 @@ const state = {
   reaffectationsRecues: [],
   socialCases: [],
   bureauUtilisateurs: [],
+  recommandations: [],
   reglesActives: null,
   unsubscribers: [],
 };
@@ -338,9 +339,16 @@ async function lancerDashboard() {
       renderApercu();
     }
   );
+  const unsubRecommandations = onSnapshot(
+    query(collection(db, "recommandations"), where("association_id", "==", state.associationId)),
+    (snap) => {
+      state.recommandations = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      renderRecommandations();
+    }
+  );
   state.unsubscribers.push(
     unsubMembres, unsubCotisations, unsubFamilles, unsubFamilyMembers,
-    unsubReaffectations, unsubSocialCases, unsubUtilisateursBureau
+    unsubReaffectations, unsubSocialCases, unsubUtilisateursBureau, unsubRecommandations
   );
 }
 
@@ -1901,6 +1909,342 @@ document.getElementById("btn-nouvel-acces-bureau")?.addEventListener("click", ()
     }
   });
 });
+
+// ---------- RECOMMANDATIONS (fil Coordination → Président → Bureau → Chefs de famille) ----------
+
+const libellesStatutReco = {
+  discussion_coordination: "En discussion avec la coordination",
+  discussion_bureau: "En discussion interne au bureau",
+  publiee_membres: "Diffusée aux chefs de famille",
+  cloturee: "Clôturée",
+};
+
+function formaterDateMessage(ms) {
+  return new Date(ms).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function renderRecommandations() {
+  const container = document.getElementById("liste-recommandations");
+  if (!container) return;
+  if (state.recommandations.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucune recommandation pour l'instant.</p>`;
+    return;
+  }
+  const tri = [...state.recommandations].sort((a, b) => (b.date_maj?.toMillis?.() || 0) - (a.date_maj?.toMillis?.() || 0));
+  container.innerHTML = tri.map((r) => `
+    <div class="entity-card" data-reco-id="${r.id}" style="cursor:pointer;">
+      <div class="entity-card-top">
+        <div>
+          <p class="entity-nom">${r.titre}</p>
+          <p class="entity-sub">${libellesStatutReco[r.statut] || r.statut}</p>
+        </div>
+        <span class="badge ${r.statut === "publiee_membres" || r.statut === "cloturee" ? "badge-actif" : "badge-erreur"}"></span>
+      </div>
+    </div>
+  `).join("");
+  container.querySelectorAll("[data-reco-id]").forEach((card) => {
+    card.addEventListener("click", () => ouvrirModalRecommandation(card.dataset.recoId));
+  });
+}
+
+let unsubVotesReco = null;
+
+function renderPourcentagesHTML(votes) {
+  const familleseligibles = state.familles.filter((f) => f.chef_membre_id);
+  const total = familleseligibles.length;
+  const nbApprouve = votes.filter((v) => v.reponse === "approuve").length;
+  const nbNApprouve = votes.filter((v) => v.reponse === "n_approuve_pas").length;
+  const nbAbstention = Math.max(total - votes.length, 0);
+  const pct = (n) => (total > 0 ? Math.round((n / total) * 100) : 0);
+  return `
+    <div class="field-row"><label>J'approuve</label><p>${pct(nbApprouve)} % (${nbApprouve} famille(s))</p></div>
+    <div class="field-row"><label>Je n'approuve pas</label><p>${pct(nbNApprouve)} % (${nbNApprouve} famille(s))</p></div>
+    <div class="field-row"><label>Je m'abstiens (pas de réponse)</label><p>${pct(nbAbstention)} % (${nbAbstention} famille(s))</p></div>
+  `;
+}
+
+function ouvrirModalRecommandation(recoId) {
+  if (unsubVotesReco) { unsubVotesReco(); unsubVotesReco = null; }
+
+  const r = state.recommandations.find((x) => x.id === recoId);
+  if (!r) return;
+  const sousRole = sousRoleActuel();
+
+  if (r.statut === "discussion_coordination" && sousRole !== "president") {
+    ouvrirModal(`
+      <h2>${r.titre}</h2>
+      <p class="subtitle-sm">Cette recommandation est en discussion entre le président et la coordination. Vous serez informé une fois transmise au bureau.</p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-primary" id="modal-annuler" style="flex:1;">Fermer</button>
+      </div>
+    `);
+    document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+    return;
+  }
+
+  const messages = r.messages || [];
+
+  let corpsHtml = "";
+  let actionsHtml = "";
+
+  if (r.statut === "discussion_coordination") {
+    const msgsCoordination = messages.filter((m) => m.phase === "coordination");
+    corpsHtml = `
+      <div style="margin:14px 0; max-height:220px; overflow-y:auto;">
+        ${msgsCoordination.map((m) => `
+          <div class="entity-card" style="margin-bottom:8px;">
+            <p class="entity-sub" style="margin-bottom:4px;">${m.auteur_role === "coordinateur" ? "Coordination" : "Vous (président)"} · ${formaterDateMessage(m.date)}</p>
+            <p>${m.texte}</p>
+          </div>
+        `).join("")}
+      </div>
+    `;
+    actionsHtml = `
+      <form id="form-reponse-coordination">
+        <div class="field-row">
+          <label>Répondre à la coordination</label>
+          <textarea name="texte" rows="3" required></textarea>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Fermer</button>
+          <button type="submit" class="btn btn-primary" style="flex:1;">Envoyer</button>
+        </div>
+      </form>
+      <hr style="margin:16px 0; border:none; border-top:1px solid #eee;" />
+      <p class="subtitle-sm">Une fois d'accord avec la coordination, transmettez la version finale à votre bureau.</p>
+      <button type="button" class="btn btn-secondary" id="btn-publier-bureau" style="width:100%;">Publier au bureau</button>
+    `;
+  } else if (r.statut === "discussion_bureau") {
+    const msgsBureau = messages.filter((m) => m.phase === "bureau");
+    corpsHtml = `
+      <div class="field-row" style="background:#f7f5ef; border-radius:10px; padding:10px;">
+        <p style="font-weight:600; margin:0 0 4px;">Version transmise par le président</p>
+        <p style="margin:0;">${r.recommandation_finale_bureau || ""}</p>
+      </div>
+      <div style="margin:14px 0; max-height:220px; overflow-y:auto;">
+        ${msgsBureau.map((m) => `
+          <div class="entity-card" style="margin-bottom:8px;">
+            <p class="entity-sub" style="margin-bottom:4px;">${libellesSousRole[m.auteur_role] || m.auteur_role} · ${formaterDateMessage(m.date)}</p>
+            <p>${m.texte}</p>
+          </div>
+        `).join("")}
+      </div>
+    `;
+    actionsHtml = `
+      <form id="form-reponse-bureau">
+        <div class="field-row">
+          <label>Votre message au bureau</label>
+          <textarea name="texte" rows="3" required></textarea>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Fermer</button>
+          <button type="submit" class="btn btn-primary" style="flex:1;">Envoyer</button>
+        </div>
+      </form>
+      ${sousRole === "secretaire_general" ? `
+        <hr style="margin:16px 0; border:none; border-top:1px solid #eee;" />
+        <p class="subtitle-sm">Une fois le consensus trouvé, diffusez la version finale à tous les chefs de famille.</p>
+        <button type="button" class="btn btn-secondary" id="btn-publier-membres" style="width:100%;">Publier aux chefs de famille</button>
+      ` : ""}
+    `;
+  } else {
+    const peutVoirPourcentages = sousRole === "president" || sousRole === "secretaire_general";
+    corpsHtml = `
+      ${r.recommandation_finale_bureau ? `<div class="field-row"><label>Version transmise au bureau</label><p>${r.recommandation_finale_bureau}</p></div>` : ""}
+      <div class="field-row" style="background:#f7f5ef; border-radius:10px; padding:10px;">
+        <p style="font-weight:600; margin:0 0 4px;">Version diffusée aux chefs de famille</p>
+        <p style="margin:0;">${r.recommandation_finale_membres || ""}</p>
+      </div>
+      ${peutVoirPourcentages ? `
+        <hr style="margin:14px 0; border:none; border-top:1px solid #eee;" />
+        <h3 style="font-size:14px; margin-bottom:8px;">Résultat de l'appréciation</h3>
+        <div id="reco-pourcentages"><p class="subtitle-sm">Chargement...</p></div>
+      ` : ""}
+    `;
+    actionsHtml = `
+      ${sousRole === "secretaire_general" && r.statut === "publiee_membres" ? `
+        <button type="button" class="btn btn-ghost-sm" id="btn-cloturer-reco" style="width:100%; margin-top:12px;">Clôturer le vote</button>
+      ` : ""}
+    `;
+  }
+
+  ouvrirModal(`
+    <h2>${r.titre}</h2>
+    <p class="subtitle-sm">${libellesStatutReco[r.statut] || r.statut}</p>
+    ${corpsHtml}
+    ${actionsHtml}
+    <div class="modal-actions" style="margin-top:12px;">
+      <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Fermer</button>
+    </div>
+  `);
+
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+
+  const formReponseCoordination = document.getElementById("form-reponse-coordination");
+  if (formReponseCoordination) {
+    formReponseCoordination.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      try {
+        const recoRef = doc(db, "recommandations", recoId);
+        const snap = await getDoc(recoRef);
+        const msgs = snap.data().messages || [];
+        msgs.push({
+          phase: "coordination",
+          auteur_id: state.currentUser.uid,
+          auteur_nom: state.currentUser.nom,
+          auteur_role: "president",
+          texte: fd.get("texte").trim(),
+          date: Date.now(),
+        });
+        await updateDoc(recoRef, { messages: msgs, date_maj: serverTimestamp() });
+        notifier("Message envoyé à la coordination.", "succes");
+        fermerModal();
+      } catch (err) {
+        notifier("Erreur : " + err.message, "erreur");
+      }
+    });
+  }
+
+  const formReponseBureau = document.getElementById("form-reponse-bureau");
+  if (formReponseBureau) {
+    formReponseBureau.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      try {
+        const recoRef = doc(db, "recommandations", recoId);
+        const snap = await getDoc(recoRef);
+        const msgs = snap.data().messages || [];
+        msgs.push({
+          phase: "bureau",
+          auteur_id: state.currentUser.uid,
+          auteur_nom: state.currentUser.nom,
+          auteur_role: sousRole,
+          texte: fd.get("texte").trim(),
+          date: Date.now(),
+        });
+        await updateDoc(recoRef, { messages: msgs, date_maj: serverTimestamp() });
+        notifier("Message envoyé au bureau.", "succes");
+        fermerModal();
+      } catch (err) {
+        notifier("Erreur : " + err.message, "erreur");
+      }
+    });
+  }
+
+  const btnPublierBureau = document.getElementById("btn-publier-bureau");
+  if (btnPublierBureau) {
+    btnPublierBureau.addEventListener("click", () => {
+      const dernierMessage = [...messages].filter((m) => m.phase === "coordination").pop();
+      ouvrirModal(`
+        <h2>Publier au bureau</h2>
+        <p class="subtitle-sm">Ce texte sera visible par le secrétaire général et le gestionnaire financier.</p>
+        <form id="form-publier-bureau">
+          <div class="field-row">
+            <label>Version finale à transmettre</label>
+            <textarea name="texte_final" rows="4" required>${dernierMessage ? dernierMessage.texte : ""}</textarea>
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Retour</button>
+            <button type="submit" class="btn btn-primary" style="flex:1;">Publier</button>
+          </div>
+        </form>
+      `);
+      document.getElementById("modal-annuler").addEventListener("click", () => ouvrirModalRecommandation(recoId));
+      document.getElementById("form-publier-bureau").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        const texteFinal = fd.get("texte_final").trim();
+        try {
+          const recoRef = doc(db, "recommandations", recoId);
+          const snap = await getDoc(recoRef);
+          const msgs = snap.data().messages || [];
+          msgs.push({
+            phase: "bureau",
+            auteur_id: state.currentUser.uid,
+            auteur_nom: state.currentUser.nom,
+            auteur_role: "president",
+            texte: "Recommandation transmise au bureau : " + texteFinal,
+            date: Date.now(),
+          });
+          await updateDoc(recoRef, {
+            statut: "discussion_bureau",
+            recommandation_finale_bureau: texteFinal,
+            messages: msgs,
+            date_maj: serverTimestamp(),
+          });
+          notifier("Recommandation transmise au bureau.", "succes");
+          fermerModal();
+        } catch (err) {
+          notifier("Erreur : " + err.message, "erreur");
+        }
+      });
+    });
+  }
+
+  const btnPublierMembres = document.getElementById("btn-publier-membres");
+  if (btnPublierMembres) {
+    btnPublierMembres.addEventListener("click", () => {
+      const dernierMessage = [...messages].filter((m) => m.phase === "bureau").pop();
+      ouvrirModal(`
+        <h2>Publier aux chefs de famille</h2>
+        <p class="subtitle-sm">Ce texte sera visible par tous les chefs de famille, avec possibilité d'approuver ou non.</p>
+        <form id="form-publier-membres">
+          <div class="field-row">
+            <label>Version finale à diffuser</label>
+            <textarea name="texte_final" rows="4" required>${dernierMessage ? dernierMessage.texte : (r.recommandation_finale_bureau || "")}</textarea>
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Retour</button>
+            <button type="submit" class="btn btn-primary" style="flex:1;">Diffuser</button>
+          </div>
+        </form>
+      `);
+      document.getElementById("modal-annuler").addEventListener("click", () => ouvrirModalRecommandation(recoId));
+      document.getElementById("form-publier-membres").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        const texteFinal = fd.get("texte_final").trim();
+        try {
+          await updateDoc(doc(db, "recommandations", recoId), {
+            statut: "publiee_membres",
+            recommandation_finale_membres: texteFinal,
+            date_publication_membres: serverTimestamp(),
+            date_maj: serverTimestamp(),
+          });
+          notifier("Recommandation diffusée aux chefs de famille.", "succes");
+          fermerModal();
+        } catch (err) {
+          notifier("Erreur : " + err.message, "erreur");
+        }
+      });
+    });
+  }
+
+  const btnCloturer = document.getElementById("btn-cloturer-reco");
+  if (btnCloturer) {
+    btnCloturer.addEventListener("click", async () => {
+      try {
+        await updateDoc(doc(db, "recommandations", recoId), { statut: "cloturee", date_maj: serverTimestamp() });
+        notifier("Vote clôturé.", "succes");
+        fermerModal();
+      } catch (err) {
+        notifier("Erreur : " + err.message, "erreur");
+      }
+    });
+  }
+
+  if (["publiee_membres", "cloturee"].includes(r.statut) && (sousRole === "president" || sousRole === "secretaire_general")) {
+    unsubVotesReco = onSnapshot(
+      query(collection(db, "recommandation_votes"), where("recommandation_id", "==", recoId)),
+      (snap) => {
+        const votes = snap.docs.map((d) => d.data());
+        const el = document.getElementById("reco-pourcentages");
+        if (el) el.innerHTML = renderPourcentagesHTML(votes);
+      }
+    );
+  }
+}
 
 document.querySelectorAll(".tab-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
