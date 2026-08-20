@@ -104,6 +104,9 @@ function appliquerPermissionsInterface() {
 
   const btnNouvelAcces = document.getElementById("btn-nouvel-acces-bureau");
   if (btnNouvelAcces) btnNouvelAcces.classList.toggle("hidden", permission("utilisateurs") !== "gerer");
+
+  const tabBtnApercu = document.getElementById("tab-btn-apercu");
+  if (tabBtnApercu) tabBtnApercu.textContent = `Tableau de bord — ${libellesSousRole[sousRoleActuel()]}`;
 }
 
 function demarrer() {
@@ -332,6 +335,7 @@ async function lancerDashboard() {
     (snap) => {
       state.bureauUtilisateurs = snap.docs.map((d) => ({ uid: d.id, ...d.data() }));
       renderUtilisateursBureau();
+      renderApercu();
     }
   );
   state.unsubscribers.push(
@@ -349,36 +353,158 @@ function render() {
   renderCasSociaux();
 }
 
-function renderApercu() {
-  const total = state.cotisations.reduce((s, c) => s + Number(c.montant || 0), 0);
-  document.getElementById("stat-solde-caisse").textContent = formatMontant(total);
-  document.getElementById("stat-nb-membres").textContent = state.membres.filter((m) => m.statut === "actif").length;
+// ---------- APERÇU (page d'accueil spécifique à chaque rôle) ----------
 
+function computeFinanceStats() {
+  const total = state.cotisations.reduce((s, c) => s + Number(c.montant || 0), 0);
   const maintenant = new Date();
   const moisActuel = maintenant.getMonth();
   const anneeActuelle = maintenant.getFullYear();
-  const totalMois = state.cotisations
-    .filter((c) => {
-      if (!c.date || !c.date.toDate) return false;
-      const d = c.date.toDate();
-      return d.getMonth() === moisActuel && d.getFullYear() === anneeActuelle;
-    })
-    .reduce((s, c) => s + Number(c.montant || 0), 0);
-  document.getElementById("stat-cotisations-mois").textContent = formatMontant(totalMois);
+  const cotisationsMois = state.cotisations.filter((c) => {
+    if (!c.date || !c.date.toDate) return false;
+    const d = c.date.toDate();
+    return d.getMonth() === moisActuel && d.getFullYear() === anneeActuelle;
+  });
+  const totalMois = cotisationsMois.reduce((s, c) => s + Number(c.montant || 0), 0);
+  const famillesAyantPayeCeMois = new Set(cotisationsMois.map((c) => c.famille_id));
+  return {
+    total,
+    totalMois,
+    nbFamillesAJour: famillesAyantPayeCeMois.size,
+    nbFamillesEnRetard: Math.max(state.familles.length - famillesAyantPayeCeMois.size, 0),
+  };
+}
 
-  const famillesAyantPayeCeMois = new Set(
-    state.cotisations
-      .filter((c) => {
-        if (!c.date || !c.date.toDate) return false;
-        const d = c.date.toDate();
-        return d.getMonth() === moisActuel && d.getFullYear() === anneeActuelle;
-      })
-      .map((c) => c.famille_id)
-  );
-  document.getElementById("stat-membres-a-jour").textContent = famillesAyantPayeCeMois.size;
+function renderApercu() {
+  const container = document.getElementById("apercu-container");
+  if (!container) return;
+  const sousRole = sousRoleActuel();
+  if (sousRole === "secretaire_general") {
+    renderApercuSecretaire(container);
+  } else if (sousRole === "gestionnaire_financier") {
+    renderApercuGestionnaireFinancier(container);
+  } else {
+    renderApercuPresident(container);
+  }
+}
 
-  const casEnCours = state.socialCases.filter((c) => !["cloture", "rejete"].includes(c.statut)).length;
-  document.getElementById("stat-cas-en-cours").textContent = casEnCours;
+function renderApercuPresident(container) {
+  const finance = computeFinanceStats();
+  const casEnCours = state.socialCases.filter((c) => !["cloture", "rejete"].includes(c.statut));
+  const casAArbitrer = state.socialCases.filter((c) => c.statut === "propose");
+  const accesActifs = state.bureauUtilisateurs.filter((u) => u.sous_role && u.sous_role !== "president" && u.statut === "actif");
+
+  container.innerHTML = `
+    <p class="subtitle-sm" style="margin-bottom:14px;">Vue d'ensemble du Président : supervision de l'association, arbitrage des cas sociaux majeurs, gestion des accès du bureau.</p>
+    <div class="cards-grid">
+      <div class="stat-card"><p class="stat-label">Familles enregistrées</p><p class="stat-value">${state.familles.length}</p></div>
+      <div class="stat-card"><p class="stat-label">Membres actifs</p><p class="stat-value">${state.membres.filter((m) => m.statut === "actif").length}</p></div>
+      <div class="stat-card"><p class="stat-label">Solde de la caisse</p><p class="stat-value">${formatMontant(finance.total)}</p></div>
+      <div class="stat-card"><p class="stat-label">Cas sociaux en cours</p><p class="stat-value">${casEnCours.length}</p></div>
+    </div>
+
+    <h3 style="margin:20px 0 8px; font-size:14px;">Dossiers en attente de votre arbitrage</h3>
+    ${casAArbitrer.length === 0
+      ? `<p class="empty-state">Aucun dossier en attente de validation présidentielle.</p>`
+      : casAArbitrer.map((c) => `
+        <div class="entity-card" data-cas-id="${c.id}" style="cursor:pointer;">
+          <div class="entity-card-top">
+            <div>
+              <p class="entity-nom">${c.beneficiaire_nom}</p>
+              <p class="entity-sub">${c.famille_nom || ""} · ${formatMontant(c.montant_propose)}</p>
+            </div>
+            <span class="badge badge-erreur">À valider</span>
+          </div>
+        </div>
+      `).join("")}
+
+    <h3 style="margin:20px 0 8px; font-size:14px;">Accès du bureau</h3>
+    <p class="subtitle-sm">${accesActifs.length} accès actif(s) en plus du vôtre (Secrétaire général / Gestionnaire financier).</p>
+    <button type="button" class="btn btn-secondary btn-sm" id="raccourci-gerer-acces">Gérer les accès</button>
+  `;
+
+  container.querySelectorAll("[data-cas-id]").forEach((card) => {
+    card.addEventListener("click", () => ouvrirModalCasSocial(card.dataset.casId));
+  });
+  document.getElementById("raccourci-gerer-acces")?.addEventListener("click", () => {
+    document.querySelector('.tab-btn[data-tab="utilisateurs"]')?.click();
+  });
+}
+
+function renderApercuSecretaire(container) {
+  const profilsIncomplets = state.membres.filter((m) => calculerAge(m.date_naissance) === null || !m.sexe);
+  const casAInstruire = state.socialCases.filter((c) => ["signale", "evalue", "valide", "execute"].includes(c.statut));
+
+  container.innerHTML = `
+    <p class="subtitle-sm" style="margin-bottom:14px;">Vue d'ensemble du Secrétaire général : tenue des membres et familles, instruction des cas sociaux, intégration des réaffectations.</p>
+    <div class="cards-grid">
+      <div class="stat-card"><p class="stat-label">Familles enregistrées</p><p class="stat-value">${state.familles.length}</p></div>
+      <div class="stat-card"><p class="stat-label">Membres actifs</p><p class="stat-value">${state.membres.filter((m) => m.statut === "actif").length}</p></div>
+      <div class="stat-card"><p class="stat-label">Profils incomplets</p><p class="stat-value">${profilsIncomplets.length}</p></div>
+      <div class="stat-card"><p class="stat-label">Réaffectations à intégrer</p><p class="stat-value">${state.reaffectationsRecues.length}</p></div>
+    </div>
+
+    <h3 style="margin:20px 0 8px; font-size:14px;">Cas sociaux à instruire</h3>
+    ${casAInstruire.length === 0
+      ? `<p class="empty-state">Aucun dossier social à instruire pour l'instant.</p>`
+      : casAInstruire.map((c) => `
+        <div class="entity-card" data-cas-id="${c.id}" style="cursor:pointer;">
+          <div class="entity-card-top">
+            <div>
+              <p class="entity-nom">${c.beneficiaire_nom}</p>
+              <p class="entity-sub">${c.famille_nom || ""} · ${libellesStatutCas[c.statut] || c.statut}</p>
+            </div>
+          </div>
+        </div>
+      `).join("")}
+
+    <h3 style="margin:20px 0 8px; font-size:14px;">Actions rapides</h3>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <button type="button" class="btn btn-secondary btn-sm" id="raccourci-nouvelle-famille">+ Créer une famille</button>
+      <button type="button" class="btn btn-secondary btn-sm" id="raccourci-code-membre">+ Générer un code membre</button>
+    </div>
+  `;
+
+  container.querySelectorAll("[data-cas-id]").forEach((card) => {
+    card.addEventListener("click", () => ouvrirModalCasSocial(card.dataset.casId));
+  });
+  document.getElementById("raccourci-nouvelle-famille")?.addEventListener("click", () => {
+    document.querySelector('.tab-btn[data-tab="familles"]')?.click();
+    document.getElementById("btn-nouvelle-famille")?.click();
+  });
+  document.getElementById("raccourci-code-membre")?.addEventListener("click", () => {
+    document.querySelector('.tab-btn[data-tab="membres"]')?.click();
+    document.getElementById("btn-nouveau-code-membre")?.click();
+  });
+}
+
+function renderApercuGestionnaireFinancier(container) {
+  const finance = computeFinanceStats();
+
+  container.innerHTML = `
+    <p class="subtitle-sm" style="margin-bottom:14px;">Vue d'ensemble du Gestionnaire financier : caisse, cotisations et encaissements.</p>
+    <div class="cards-grid">
+      <div class="stat-card"><p class="stat-label">Solde de la caisse</p><p class="stat-value">${formatMontant(finance.total)}</p></div>
+      <div class="stat-card"><p class="stat-label">Cotisations ce mois</p><p class="stat-value">${formatMontant(finance.totalMois)}</p></div>
+      <div class="stat-card"><p class="stat-label">Familles à jour ce mois</p><p class="stat-value">${finance.nbFamillesAJour}</p></div>
+      <div class="stat-card"><p class="stat-label">Familles en retard</p><p class="stat-value">${finance.nbFamillesEnRetard}</p></div>
+    </div>
+
+    <h3 style="margin:20px 0 8px; font-size:14px;">Actions rapides</h3>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <button type="button" class="btn btn-primary btn-sm" id="raccourci-encaisser">+ Encaisser le quota d'une famille</button>
+      <button type="button" class="btn btn-secondary btn-sm" id="raccourci-paiement-libre">+ Paiement libre</button>
+    </div>
+  `;
+
+  document.getElementById("raccourci-encaisser")?.addEventListener("click", () => {
+    document.querySelector('.tab-btn[data-tab="cotisations"]')?.click();
+    document.getElementById("btn-encaisser-quota-famille")?.click();
+  });
+  document.getElementById("raccourci-paiement-libre")?.addEventListener("click", () => {
+    document.querySelector('.tab-btn[data-tab="cotisations"]')?.click();
+    document.getElementById("btn-nouvelle-cotisation")?.click();
+  });
 }
 
 // ---------- MEMBRES (comptes = chefs de famille ou en attente) ----------
