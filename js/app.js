@@ -9,6 +9,8 @@ import { genererCode, formatDate, formatMontant, notifier } from "./utils.js";
 import { calculerAge, calculerQuotaMembre, obtenirReglesActives } from "./bareme.js";
 import { evaluerEligibiliteAssistance, genererReferenceCas } from "./casSociaux.js";
 
+const SEUIL_DOUBLE_VALIDATION_DEFAUT = 500000;
+
 const state = {
   currentUser: null,
   associationId: null,
@@ -21,6 +23,10 @@ const state = {
   socialCases: [],
   bureauUtilisateurs: [],
   recommandations: [],
+  reunions: [],
+  depenses: [],
+  decisions: [],
+  dossiersDiscipline: [],
   reglesActives: null,
   unsubscribers: [],
 };
@@ -43,14 +49,17 @@ const PERMISSIONS = {
   president: {
     membres: "lecture", familles: "lecture", cotisations: "lecture",
     reaffectations: "lecture", cas_sociaux: "arbitrage", utilisateurs: "gerer",
+    reunions: "lecture", finances: "validation", decisions: "valider_publier", discipline: "decider",
   },
   secretaire_general: {
     membres: "gerer", familles: "gerer", cotisations: "aucun",
     reaffectations: "gerer", cas_sociaux: "instruire", utilisateurs: "aucun",
+    reunions: "gerer", finances: "aucun", decisions: "preparer", discipline: "instruire",
   },
   gestionnaire_financier: {
     membres: "lecture", familles: "lecture", cotisations: "gerer",
     reaffectations: "aucun", cas_sociaux: "aucun", utilisateurs: "aucun",
+    reunions: "aucun", finances: "gerer", decisions: "aucun", discipline: "aucun",
   },
 };
 
@@ -66,6 +75,9 @@ function casSocialActionAutorisee(statutCas) {
   if (sousRole === "secretaire_general") return ["signale", "evalue", "valide", "execute"].includes(statutCas);
   return false;
 }
+function seuilDoubleValidation() {
+  return state.association?.seuil_double_validation || SEUIL_DOUBLE_VALIDATION_DEFAUT;
+}
 
 function appliquerPermissionsInterface() {
   const gatingOnglets = {
@@ -73,7 +85,13 @@ function appliquerPermissionsInterface() {
     reaffectations: permission("reaffectations") === "aucun",
     social: permission("cas_sociaux") === "aucun",
     utilisateurs: permission("utilisateurs") === "aucun",
+    reunions: permission("reunions") === "aucun",
+    finances: permission("finances") === "aucun" && permission("finances") !== "validation" && sousRoleActuel() !== "president",
+    decisions: permission("decisions") === "aucun",
+    discipline: permission("discipline") === "aucun",
   };
+  // Le président a un accès "validation" en finances : il doit voir l'onglet en lecture/validation, pas le cacher.
+  gatingOnglets.finances = sousRoleActuel() === "gestionnaire_financier" || sousRoleActuel() === "president" ? false : true;
 
   Object.entries(gatingOnglets).forEach(([tab, doitCacher]) => {
     const btn = document.querySelector(`.tab-btn[data-tab="${tab}"]`);
@@ -105,6 +123,18 @@ function appliquerPermissionsInterface() {
 
   const btnNouvelAcces = document.getElementById("btn-nouvel-acces-bureau");
   if (btnNouvelAcces) btnNouvelAcces.classList.toggle("hidden", permission("utilisateurs") !== "gerer");
+
+  const btnNouvelleReunion = document.getElementById("btn-nouvelle-reunion");
+  if (btnNouvelleReunion) btnNouvelleReunion.classList.toggle("hidden", permission("reunions") !== "gerer");
+
+  const btnNouvelleDepense = document.getElementById("btn-nouvelle-depense");
+  if (btnNouvelleDepense) btnNouvelleDepense.classList.toggle("hidden", sousRoleActuel() !== "gestionnaire_financier");
+
+  const btnNouvelleDecision = document.getElementById("btn-nouvelle-decision");
+  if (btnNouvelleDecision) btnNouvelleDecision.classList.toggle("hidden", permission("decisions") !== "preparer");
+
+  const btnNouveauDossierDiscipline = document.getElementById("btn-nouveau-dossier-discipline");
+  if (btnNouveauDossierDiscipline) btnNouveauDossierDiscipline.classList.toggle("hidden", permission("discipline") !== "instruire");
 
   const tabBtnApercu = document.getElementById("tab-btn-apercu");
   if (tabBtnApercu) tabBtnApercu.textContent = `Tableau de bord — ${libellesSousRole[sousRoleActuel()]}`;
@@ -191,6 +221,7 @@ document.getElementById("form-inscription").addEventListener("submit", async (e)
       coordination_id: coordinationId,
       date_creation: serverTimestamp(),
       statut: "actif",
+      seuil_double_validation: SEUIL_DOUBLE_VALIDATION_DEFAUT,
     });
 
     const userData = {
@@ -346,9 +377,41 @@ async function lancerDashboard() {
       renderRecommandations();
     }
   );
+  const unsubReunions = onSnapshot(
+    query(collection(db, "meetings"), where("association_id", "==", state.associationId)),
+    (snap) => {
+      state.reunions = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      renderReunions();
+      renderApercu();
+    }
+  );
+  const unsubDepenses = onSnapshot(
+    query(collection(db, "expenses"), where("association_id", "==", state.associationId)),
+    (snap) => {
+      state.depenses = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      renderDepenses();
+      renderApercu();
+    }
+  );
+  const unsubDecisions = onSnapshot(
+    query(collection(db, "decisions"), where("association_id", "==", state.associationId)),
+    (snap) => {
+      state.decisions = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      renderDecisions();
+      renderApercu();
+    }
+  );
+  const unsubDiscipline = onSnapshot(
+    query(collection(db, "disciplinary_cases"), where("association_id", "==", state.associationId)),
+    (snap) => {
+      state.dossiersDiscipline = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      renderDiscipline();
+    }
+  );
   state.unsubscribers.push(
     unsubMembres, unsubCotisations, unsubFamilles, unsubFamilyMembers,
-    unsubReaffectations, unsubSocialCases, unsubUtilisateursBureau, unsubRecommandations
+    unsubReaffectations, unsubSocialCases, unsubUtilisateursBureau, unsubRecommandations,
+    unsubReunions, unsubDepenses, unsubDecisions, unsubDiscipline
   );
 }
 
@@ -400,10 +463,12 @@ function renderApercuPresident(container) {
   const finance = computeFinanceStats();
   const casEnCours = state.socialCases.filter((c) => !["cloture", "rejete"].includes(c.statut));
   const casAArbitrer = state.socialCases.filter((c) => c.statut === "propose");
+  const depensesAValider = state.depenses.filter((d) => d.statut === "controlee");
+  const decisionsAValider = state.decisions.filter((d) => d.statut === "soumise");
   const accesActifs = state.bureauUtilisateurs.filter((u) => u.sous_role && u.sous_role !== "president" && u.statut === "actif");
 
   container.innerHTML = `
-    <p class="subtitle-sm" style="margin-bottom:14px;">Vue d'ensemble du Président : supervision de l'association, arbitrage des cas sociaux majeurs, gestion des accès du bureau.</p>
+    <p class="subtitle-sm" style="margin-bottom:14px;">Vue d'ensemble du Président : supervision de l'association, arbitrage des cas sociaux majeurs, validation des dépenses au-dessus du seuil, publication des décisions.</p>
     <div class="cards-grid">
       <div class="stat-card"><p class="stat-label">Familles enregistrées</p><p class="stat-value">${state.familles.length}</p></div>
       <div class="stat-card"><p class="stat-label">Membres actifs</p><p class="stat-value">${state.membres.filter((m) => m.statut === "actif").length}</p></div>
@@ -411,29 +476,44 @@ function renderApercuPresident(container) {
       <div class="stat-card"><p class="stat-label">Cas sociaux en cours</p><p class="stat-value">${casEnCours.length}</p></div>
     </div>
 
-    <h3 style="margin:20px 0 8px; font-size:14px;">Dossiers en attente de votre arbitrage</h3>
-    ${casAArbitrer.length === 0
-      ? `<p class="empty-state">Aucun dossier en attente de validation présidentielle.</p>`
-      : casAArbitrer.map((c) => `
-        <div class="entity-card" data-cas-id="${c.id}" style="cursor:pointer;">
-          <div class="entity-card-top">
-            <div>
-              <p class="entity-nom">${c.beneficiaire_nom}</p>
-              <p class="entity-sub">${c.famille_nom || ""} · ${formatMontant(c.montant_propose)}</p>
+    <h3 style="margin:20px 0 8px; font-size:14px;">En attente de votre action</h3>
+    ${(casAArbitrer.length + depensesAValider.length + decisionsAValider.length) === 0
+      ? `<p class="empty-state">Rien n'attend votre validation pour l'instant.</p>`
+      : `
+        ${casAArbitrer.map((c) => `
+          <div class="entity-card" data-cas-id="${c.id}" style="cursor:pointer;">
+            <div class="entity-card-top">
+              <div><p class="entity-nom">${c.beneficiaire_nom}</p><p class="entity-sub">Cas social · ${formatMontant(c.montant_propose)}</p></div>
+              <span class="badge badge-erreur">À valider</span>
             </div>
-            <span class="badge badge-erreur">À valider</span>
           </div>
-        </div>
-      `).join("")}
+        `).join("")}
+        ${depensesAValider.map((d) => `
+          <div class="entity-card" data-depense-id="${d.id}" style="cursor:pointer;">
+            <div class="entity-card-top">
+              <div><p class="entity-nom">${d.motif}</p><p class="entity-sub">Dépense · ${formatMontant(d.montant)}</p></div>
+              <span class="badge badge-erreur">À valider</span>
+            </div>
+          </div>
+        `).join("")}
+        ${decisionsAValider.map((d) => `
+          <div class="entity-card" data-decision-id="${d.id}" style="cursor:pointer;">
+            <div class="entity-card-top">
+              <div><p class="entity-nom">${d.titre}</p><p class="entity-sub">Décision · ${d.numero || ""}</p></div>
+              <span class="badge badge-erreur">À valider</span>
+            </div>
+          </div>
+        `).join("")}
+      `}
 
     <h3 style="margin:20px 0 8px; font-size:14px;">Accès du bureau</h3>
-    <p class="subtitle-sm">${accesActifs.length} accès actif(s) en plus du vôtre (Secrétaire général / Gestionnaire financier).</p>
+    <p class="subtitle-sm">${accesActifs.length} accès actif(s) en plus du vôtre.</p>
     <button type="button" class="btn btn-secondary btn-sm" id="raccourci-gerer-acces">Gérer les accès</button>
   `;
 
-  container.querySelectorAll("[data-cas-id]").forEach((card) => {
-    card.addEventListener("click", () => ouvrirModalCasSocial(card.dataset.casId));
-  });
+  container.querySelectorAll("[data-cas-id]").forEach((card) => card.addEventListener("click", () => ouvrirModalCasSocial(card.dataset.casId)));
+  container.querySelectorAll("[data-depense-id]").forEach((card) => card.addEventListener("click", () => ouvrirModalDepense(card.dataset.depenseId)));
+  container.querySelectorAll("[data-decision-id]").forEach((card) => card.addEventListener("click", () => ouvrirModalDecision(card.dataset.decisionId)));
   document.getElementById("raccourci-gerer-acces")?.addEventListener("click", () => {
     document.querySelector('.tab-btn[data-tab="utilisateurs"]')?.click();
   });
@@ -442,13 +522,14 @@ function renderApercuPresident(container) {
 function renderApercuSecretaire(container) {
   const profilsIncomplets = state.membres.filter((m) => calculerAge(m.date_naissance) === null || !m.sexe);
   const casAInstruire = state.socialCases.filter((c) => ["signale", "evalue", "valide", "execute"].includes(c.statut));
+  const reunionsAVenir = state.reunions.filter((r) => ["preparation", "convoquee"].includes(r.statut));
 
   container.innerHTML = `
-    <p class="subtitle-sm" style="margin-bottom:14px;">Vue d'ensemble du Secrétaire général : tenue des membres et familles, instruction des cas sociaux, intégration des réaffectations.</p>
+    <p class="subtitle-sm" style="margin-bottom:14px;">Vue d'ensemble du Secrétaire général : membres et familles, cas sociaux, réunions, décisions, discipline.</p>
     <div class="cards-grid">
       <div class="stat-card"><p class="stat-label">Familles enregistrées</p><p class="stat-value">${state.familles.length}</p></div>
-      <div class="stat-card"><p class="stat-label">Membres actifs</p><p class="stat-value">${state.membres.filter((m) => m.statut === "actif").length}</p></div>
       <div class="stat-card"><p class="stat-label">Profils incomplets</p><p class="stat-value">${profilsIncomplets.length}</p></div>
+      <div class="stat-card"><p class="stat-label">Réunions à venir</p><p class="stat-value">${reunionsAVenir.length}</p></div>
       <div class="stat-card"><p class="stat-label">Réaffectations à intégrer</p><p class="stat-value">${state.reaffectationsRecues.length}</p></div>
     </div>
 
@@ -458,10 +539,7 @@ function renderApercuSecretaire(container) {
       : casAInstruire.map((c) => `
         <div class="entity-card" data-cas-id="${c.id}" style="cursor:pointer;">
           <div class="entity-card-top">
-            <div>
-              <p class="entity-nom">${c.beneficiaire_nom}</p>
-              <p class="entity-sub">${c.famille_nom || ""} · ${libellesStatutCas[c.statut] || c.statut}</p>
-            </div>
+            <div><p class="entity-nom">${c.beneficiaire_nom}</p><p class="entity-sub">${c.famille_nom || ""} · ${libellesStatutCas[c.statut] || c.statut}</p></div>
           </div>
         </div>
       `).join("")}
@@ -469,39 +547,38 @@ function renderApercuSecretaire(container) {
     <h3 style="margin:20px 0 8px; font-size:14px;">Actions rapides</h3>
     <div style="display:flex; gap:8px; flex-wrap:wrap;">
       <button type="button" class="btn btn-secondary btn-sm" id="raccourci-nouvelle-famille">+ Créer une famille</button>
-      <button type="button" class="btn btn-secondary btn-sm" id="raccourci-code-membre">+ Générer un code membre</button>
+      <button type="button" class="btn btn-secondary btn-sm" id="raccourci-nouvelle-reunion">+ Planifier une réunion</button>
     </div>
   `;
 
-  container.querySelectorAll("[data-cas-id]").forEach((card) => {
-    card.addEventListener("click", () => ouvrirModalCasSocial(card.dataset.casId));
-  });
+  container.querySelectorAll("[data-cas-id]").forEach((card) => card.addEventListener("click", () => ouvrirModalCasSocial(card.dataset.casId)));
   document.getElementById("raccourci-nouvelle-famille")?.addEventListener("click", () => {
     document.querySelector('.tab-btn[data-tab="familles"]')?.click();
     document.getElementById("btn-nouvelle-famille")?.click();
   });
-  document.getElementById("raccourci-code-membre")?.addEventListener("click", () => {
-    document.querySelector('.tab-btn[data-tab="membres"]')?.click();
-    document.getElementById("btn-nouveau-code-membre")?.click();
+  document.getElementById("raccourci-nouvelle-reunion")?.addEventListener("click", () => {
+    document.querySelector('.tab-btn[data-tab="reunions"]')?.click();
+    document.getElementById("btn-nouvelle-reunion")?.click();
   });
 }
 
 function renderApercuGestionnaireFinancier(container) {
   const finance = computeFinanceStats();
+  const depensesEnCours = state.depenses.filter((d) => !["executee", "cloturee"].includes(d.statut));
 
   container.innerHTML = `
-    <p class="subtitle-sm" style="margin-bottom:14px;">Vue d'ensemble du Gestionnaire financier : caisse, cotisations et encaissements.</p>
+    <p class="subtitle-sm" style="margin-bottom:14px;">Vue d'ensemble du Gestionnaire financier : caisse, cotisations et dépenses.</p>
     <div class="cards-grid">
       <div class="stat-card"><p class="stat-label">Solde de la caisse</p><p class="stat-value">${formatMontant(finance.total)}</p></div>
       <div class="stat-card"><p class="stat-label">Cotisations ce mois</p><p class="stat-value">${formatMontant(finance.totalMois)}</p></div>
-      <div class="stat-card"><p class="stat-label">Familles à jour ce mois</p><p class="stat-value">${finance.nbFamillesAJour}</p></div>
       <div class="stat-card"><p class="stat-label">Familles en retard</p><p class="stat-value">${finance.nbFamillesEnRetard}</p></div>
+      <div class="stat-card"><p class="stat-label">Dépenses en cours</p><p class="stat-value">${depensesEnCours.length}</p></div>
     </div>
 
     <h3 style="margin:20px 0 8px; font-size:14px;">Actions rapides</h3>
     <div style="display:flex; gap:8px; flex-wrap:wrap;">
       <button type="button" class="btn btn-primary btn-sm" id="raccourci-encaisser">+ Encaisser le quota d'une famille</button>
-      <button type="button" class="btn btn-secondary btn-sm" id="raccourci-paiement-libre">+ Paiement libre</button>
+      <button type="button" class="btn btn-secondary btn-sm" id="raccourci-nouvelle-depense">+ Nouvelle dépense</button>
     </div>
   `;
 
@@ -509,13 +586,13 @@ function renderApercuGestionnaireFinancier(container) {
     document.querySelector('.tab-btn[data-tab="cotisations"]')?.click();
     document.getElementById("btn-encaisser-quota-famille")?.click();
   });
-  document.getElementById("raccourci-paiement-libre")?.addEventListener("click", () => {
-    document.querySelector('.tab-btn[data-tab="cotisations"]')?.click();
-    document.getElementById("btn-nouvelle-cotisation")?.click();
+  document.getElementById("raccourci-nouvelle-depense")?.addEventListener("click", () => {
+    document.querySelector('.tab-btn[data-tab="finances"]')?.click();
+    document.getElementById("btn-nouvelle-depense")?.click();
   });
 }
 
-// ---------- MEMBRES (comptes = chefs de famille ou en attente) ----------
+// ---------- MEMBRES ----------
 
 function renderMembres() {
   const recherche = (document.getElementById("recherche-membres").value || "").toLowerCase();
@@ -1796,7 +1873,7 @@ function ouvrirModalPresencesCas(casId) {
   });
 }
 
-// ---------- UTILISATEURS / BUREAU (accès Président / Secrétaire / Gestionnaire) ----------
+// ---------- UTILISATEURS / BUREAU ----------
 
 function renderUtilisateursBureau() {
   const container = document.getElementById("liste-utilisateurs-bureau");
@@ -1910,7 +1987,7 @@ document.getElementById("btn-nouvel-acces-bureau")?.addEventListener("click", ()
   });
 });
 
-// ---------- RECOMMANDATIONS (fil Coordination → Président → Bureau → Chefs de famille) ----------
+// ---------- RECOMMANDATIONS ----------
 
 const libellesStatutReco = {
   discussion_coordination: "En discussion avec la coordination",
@@ -1938,7 +2015,6 @@ function renderRecommandations() {
           <p class="entity-nom">${r.titre}</p>
           <p class="entity-sub">${libellesStatutReco[r.statut] || r.statut}</p>
         </div>
-        <span class="badge ${r.statut === "publiee_membres" || r.statut === "cloturee" ? "badge-actif" : "badge-erreur"}"></span>
       </div>
     </div>
   `).join("");
@@ -2244,6 +2320,788 @@ function ouvrirModalRecommandation(recoId) {
       }
     );
   }
+}
+
+// ---------- RÉUNIONS ----------
+
+const libellesStatutReunion = {
+  preparation: "En préparation",
+  convoquee: "Convoquée",
+  tenue: "Tenue",
+  cloturee: "Clôturée",
+};
+
+function renderReunions() {
+  const container = document.getElementById("liste-reunions");
+  if (!container) return;
+  if (state.reunions.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucune réunion planifiée pour l'instant.</p>`;
+    return;
+  }
+  const tri = [...state.reunions].sort((a, b) => (b.date_creation?.toMillis?.() || 0) - (a.date_creation?.toMillis?.() || 0));
+  container.innerHTML = tri.map((r) => `
+    <div class="entity-card" data-reunion-id="${r.id}" style="cursor:pointer;">
+      <div class="entity-card-top">
+        <div>
+          <p class="entity-nom">${r.titre}</p>
+          <p class="entity-sub">${r.date_reunion || ""} · ${r.lieu || ""}</p>
+        </div>
+        <span class="badge ${["tenue", "cloturee"].includes(r.statut) ? "badge-actif" : "badge-erreur"}">${libellesStatutReunion[r.statut] || r.statut}</span>
+      </div>
+    </div>
+  `).join("");
+  container.querySelectorAll("[data-reunion-id]").forEach((card) => {
+    card.addEventListener("click", () => ouvrirModalReunion(card.dataset.reunionId));
+  });
+}
+
+document.getElementById("btn-nouvelle-reunion")?.addEventListener("click", () => {
+  if (permission("reunions") !== "gerer") return;
+  ouvrirModal(`
+    <h2>Planifier une réunion</h2>
+    <form id="form-nouvelle-reunion">
+      <div class="field-row">
+        <label>Titre</label>
+        <input type="text" name="titre" required placeholder="Ex : Assemblée générale trimestrielle" />
+      </div>
+      <div class="field-row">
+        <label>Date et heure</label>
+        <input type="datetime-local" name="date_reunion" required />
+      </div>
+      <div class="field-row">
+        <label>Lieu</label>
+        <input type="text" name="lieu" required />
+      </div>
+      <div class="field-row">
+        <label>Ordre du jour</label>
+        <textarea name="ordre_du_jour" rows="3" required></textarea>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Créer</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-nouvelle-reunion").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      await addDoc(collection(db, "meetings"), {
+        association_id: state.associationId,
+        titre: fd.get("titre").trim(),
+        date_reunion: fd.get("date_reunion"),
+        lieu: fd.get("lieu").trim(),
+        ordre_du_jour: fd.get("ordre_du_jour").trim(),
+        statut: "preparation",
+        presences: {},
+        compte_rendu: "",
+        enregistre_par: state.currentUser.uid,
+        date_creation: serverTimestamp(),
+      });
+      notifier("Réunion créée.", "succes");
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+});
+
+function ouvrirModalReunion(reunionId) {
+  const r = state.reunions.find((x) => x.id === reunionId);
+  if (!r) return;
+  const peutGerer = permission("reunions") === "gerer";
+
+  let blocSuivant = "";
+  if (r.statut === "preparation") {
+    blocSuivant = peutGerer ? `
+      <button type="button" class="btn btn-primary" id="btn-convoquer-reunion" style="width:100%;">Convoquer les membres</button>
+    ` : "";
+  } else if (r.statut === "convoquee") {
+    blocSuivant = peutGerer ? `
+      <button type="button" class="btn btn-secondary" id="btn-gerer-presences-reunion" style="width:100%; margin-bottom:8px;">Enregistrer les présences</button>
+      <button type="button" class="btn btn-primary" id="btn-marquer-tenue" style="width:100%;">Marquer la réunion comme tenue</button>
+    ` : "";
+  } else if (r.statut === "tenue") {
+    blocSuivant = peutGerer ? `
+      <form id="form-compte-rendu">
+        <div class="field-row">
+          <label>Compte rendu</label>
+          <textarea name="compte_rendu" rows="4" required>${r.compte_rendu || ""}</textarea>
+        </div>
+        <button type="submit" class="btn btn-primary" style="width:100%;">Clôturer avec compte rendu</button>
+      </form>
+    ` : "";
+  }
+
+  const presences = r.presences || {};
+  const nbPresent = Object.values(presences).filter((v) => v === "present").length;
+  const nbAbsent = Object.values(presences).filter((v) => v === "absent").length;
+
+  ouvrirModal(`
+    <h2>${r.titre}</h2>
+    <p class="subtitle-sm">${r.date_reunion || ""} · ${r.lieu || ""} · ${libellesStatutReunion[r.statut] || r.statut}</p>
+    <div class="field-row"><label>Ordre du jour</label><p>${r.ordre_du_jour || "—"}</p></div>
+    ${r.statut !== "preparation" ? `<div class="field-row"><label>Présences enregistrées</label><p>${nbPresent} présent(s), ${nbAbsent} absent(s)</p></div>` : ""}
+    ${r.compte_rendu ? `<div class="field-row"><label>Compte rendu</label><p>${r.compte_rendu}</p></div>` : ""}
+    <hr style="margin:14px 0; border:none; border-top:1px solid #eee;" />
+    ${blocSuivant}
+    <div class="modal-actions" style="margin-top:12px;">
+      <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Fermer</button>
+    </div>
+  `);
+
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+
+  document.getElementById("btn-convoquer-reunion")?.addEventListener("click", async () => {
+    try {
+      await updateDoc(doc(db, "meetings", reunionId), { statut: "convoquee", date_convocation: serverTimestamp() });
+      notifier("Réunion convoquée. Les familles sont notifiées.", "succes");
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+
+  document.getElementById("btn-marquer-tenue")?.addEventListener("click", async () => {
+    try {
+      await updateDoc(doc(db, "meetings", reunionId), { statut: "tenue", date_tenue: serverTimestamp() });
+      notifier("Réunion marquée comme tenue.", "succes");
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+
+  document.getElementById("btn-gerer-presences-reunion")?.addEventListener("click", () => ouvrirModalPresencesReunion(reunionId));
+
+  document.getElementById("form-compte-rendu")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      await updateDoc(doc(db, "meetings", reunionId), {
+        statut: "cloturee",
+        compte_rendu: fd.get("compte_rendu").trim(),
+        date_cloture: serverTimestamp(),
+      });
+      notifier("Réunion clôturée.", "succes");
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+}
+
+function ouvrirModalPresencesReunion(reunionId) {
+  const r = state.reunions.find((x) => x.id === reunionId);
+  if (!r) return;
+  const presences = r.presences || {};
+
+  const lignes = state.familles.map((f) => {
+    const chef = state.membres.find((m) => m.uid === f.chef_membre_id);
+    const valeur = presences[f.id] || "";
+    return `
+      <div class="field-row" data-famille-id="${f.id}">
+        <label>${f.nom_famille || (chef ? chef.nom : "Famille")}</label>
+        <select data-select-presence-reunion>
+          <option value="" ${valeur === "" ? "selected" : ""}>Pas de donnée</option>
+          <option value="present" ${valeur === "present" ? "selected" : ""}>Présent</option>
+          <option value="absent" ${valeur === "absent" ? "selected" : ""}>Absent</option>
+        </select>
+      </div>
+    `;
+  }).join("");
+
+  ouvrirModal(`
+    <h2>Présences — ${r.titre}</h2>
+    <form id="form-presences-reunion">
+      ${lignes || '<p class="empty-state">Aucune famille enregistrée.</p>'}
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Enregistrer</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", () => ouvrirModalReunion(reunionId));
+  document.getElementById("form-presences-reunion").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const nouvellesPresences = {};
+    document.querySelectorAll("[data-famille-id]").forEach((ligne) => {
+      const val = ligne.querySelector("[data-select-presence-reunion]").value;
+      if (val) nouvellesPresences[ligne.dataset.familleId] = val;
+    });
+    try {
+      await updateDoc(doc(db, "meetings", reunionId), { presences: nouvellesPresences });
+      notifier("Présences enregistrées.", "succes");
+      ouvrirModalReunion(reunionId);
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+}
+
+// ---------- FINANCES (dépenses avec seuil de double validation) ----------
+
+const libellesStatutDepense = {
+  soumise: "Soumise",
+  controlee: "Contrôlée, en attente du président",
+  validee: "Validée",
+  executee: "Exécutée",
+  cloturee: "Clôturée",
+};
+
+function renderDepenses() {
+  const container = document.getElementById("liste-depenses");
+  if (!container) return;
+
+  const seuilInfo = document.getElementById("seuil-info");
+  if (seuilInfo) seuilInfo.textContent = `Seuil de double validation actuel : ${formatMontant(seuilDoubleValidation())}`;
+
+  if (state.depenses.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucune dépense enregistrée pour l'instant.</p>`;
+    return;
+  }
+  const tri = [...state.depenses].sort((a, b) => (b.date_creation?.toMillis?.() || 0) - (a.date_creation?.toMillis?.() || 0));
+  container.innerHTML = tri.map((d) => `
+    <div class="entity-card" data-depense-id="${d.id}" style="cursor:pointer;">
+      <div class="entity-card-top">
+        <div>
+          <p class="entity-nom">${d.motif}</p>
+          <p class="entity-sub">${d.beneficiaire || ""} · ${formatDate(d.date_creation)}${d.montant >= seuilDoubleValidation() ? " · Double contrôle requis" : ""}</p>
+        </div>
+        <span class="badge ${["executee", "cloturee"].includes(d.statut) ? "badge-actif" : "badge-erreur"}">${formatMontant(d.montant)}</span>
+      </div>
+    </div>
+  `).join("");
+  container.querySelectorAll("[data-depense-id]").forEach((card) => {
+    card.addEventListener("click", () => ouvrirModalDepense(card.dataset.depenseId));
+  });
+}
+
+document.getElementById("btn-nouvelle-depense")?.addEventListener("click", () => {
+  if (sousRoleActuel() !== "gestionnaire_financier") return;
+  ouvrirModal(`
+    <h2>Nouvelle dépense</h2>
+    <p class="subtitle-sm">Seuil de double validation actuel : ${formatMontant(seuilDoubleValidation())}. Au-dessus, la validation du président sera requise.</p>
+    <form id="form-nouvelle-depense">
+      <div class="field-row">
+        <label>Motif</label>
+        <input type="text" name="motif" required placeholder="Ex : Achat de matériel pour l'assemblée" />
+      </div>
+      <div class="field-row">
+        <label>Bénéficiaire</label>
+        <input type="text" name="beneficiaire" required />
+      </div>
+      <div class="field-row">
+        <label>Montant (GNF)</label>
+        <input type="number" name="montant" min="1" required />
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Soumettre</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-nouvelle-depense").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const montant = Number(fd.get("montant"));
+    try {
+      await addDoc(collection(db, "expenses"), {
+        association_id: state.associationId,
+        motif: fd.get("motif").trim(),
+        beneficiaire: fd.get("beneficiaire").trim(),
+        montant,
+        statut: "soumise",
+        demandeur_id: state.currentUser.uid,
+        demandeur_nom: state.currentUser.nom,
+        justificatif_note: "",
+        date_creation: serverTimestamp(),
+      });
+      notifier("Dépense soumise.", "succes");
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+});
+
+function ouvrirModalDepense(depenseId) {
+  const d = state.depenses.find((x) => x.id === depenseId);
+  if (!d) return;
+  const sousRole = sousRoleActuel();
+  const depasseSeuil = d.montant >= seuilDoubleValidation();
+
+  let blocSuivant = "";
+
+  if (d.statut === "soumise" && sousRole === "gestionnaire_financier") {
+    blocSuivant = depasseSeuil ? `
+      <p class="subtitle-sm">Ce montant dépasse le seuil de double validation. Transmettez-la au président.</p>
+      <button type="button" class="btn btn-primary" id="btn-controler-depense" style="width:100%;">Transmettre au président</button>
+    ` : `
+      <button type="button" class="btn btn-primary" id="btn-valider-depense-directe" style="width:100%;">Valider (sous le seuil)</button>
+    `;
+  } else if (d.statut === "controlee" && sousRole === "president") {
+    blocSuivant = `<button type="button" class="btn btn-primary" id="btn-valider-depense-president" style="width:100%;">Valider cette dépense</button>`;
+  } else if (d.statut === "validee" && sousRole === "gestionnaire_financier") {
+    blocSuivant = `
+      <form id="form-executer-depense">
+        <div class="field-row">
+          <label>Référence du justificatif</label>
+          <input type="text" name="justificatif_note" placeholder="Ex : Reçu n°..." required />
+        </div>
+        <button type="submit" class="btn btn-primary" style="width:100%;">Marquer comme exécutée</button>
+      </form>
+    `;
+  } else if (d.statut === "executee" && sousRole === "gestionnaire_financier") {
+    blocSuivant = `<button type="button" class="btn btn-primary" id="btn-cloturer-depense" style="width:100%;">Clôturer</button>`;
+  } else if (["soumise", "controlee"].includes(d.statut) && sousRole !== "gestionnaire_financier" && sousRole !== "president") {
+    blocSuivant = `<p class="subtitle-sm">Cette dépense est en cours de traitement.</p>`;
+  }
+
+  ouvrirModal(`
+    <h2>${d.motif}</h2>
+    <p class="subtitle-sm">${d.beneficiaire || ""} · ${formatMontant(d.montant)}${depasseSeuil ? " · Double contrôle requis" : ""}</p>
+    <div class="field-row"><label>Statut</label><p>${libellesStatutDepense[d.statut] || d.statut}</p></div>
+    ${d.justificatif_note ? `<div class="field-row"><label>Justificatif</label><p>${d.justificatif_note}</p></div>` : ""}
+    <hr style="margin:14px 0; border:none; border-top:1px solid #eee;" />
+    ${blocSuivant}
+    <div class="modal-actions" style="margin-top:12px;">
+      <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Fermer</button>
+    </div>
+  `);
+
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+
+  document.getElementById("btn-controler-depense")?.addEventListener("click", async () => {
+    try {
+      await updateDoc(doc(db, "expenses", depenseId), { statut: "controlee", date_controle: serverTimestamp() });
+      notifier("Transmise au président pour validation.", "succes");
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+
+  document.getElementById("btn-valider-depense-directe")?.addEventListener("click", async () => {
+    try {
+      await updateDoc(doc(db, "expenses", depenseId), { statut: "validee", date_validation: serverTimestamp() });
+      notifier("Dépense validée.", "succes");
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+
+  document.getElementById("btn-valider-depense-president")?.addEventListener("click", async () => {
+    try {
+      await updateDoc(doc(db, "expenses", depenseId), {
+        statut: "validee",
+        valide_par: state.currentUser.uid,
+        date_validation: serverTimestamp(),
+      });
+      notifier("Dépense validée par le président.", "succes");
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+
+  document.getElementById("form-executer-depense")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      await updateDoc(doc(db, "expenses", depenseId), {
+        statut: "executee",
+        justificatif_note: fd.get("justificatif_note").trim(),
+        date_execution: serverTimestamp(),
+      });
+      notifier("Dépense exécutée. Un paiement négatif est enregistré pour la caisse.", "succes");
+      await addDoc(collection(db, "cotisations"), {
+        association_id: state.associationId,
+        famille_id: null,
+        membre_id: null,
+        membre_nom: "Dépense : " + d.motif,
+        type: "libre",
+        montant: -Math.abs(d.montant),
+        enregistre_par: state.currentUser.uid,
+        date: serverTimestamp(),
+      });
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+
+  document.getElementById("btn-cloturer-depense")?.addEventListener("click", async () => {
+    try {
+      await updateDoc(doc(db, "expenses", depenseId), { statut: "cloturee", date_cloture: serverTimestamp() });
+      notifier("Dépense clôturée.", "succes");
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+}
+
+document.getElementById("btn-modifier-seuil")?.addEventListener("click", () => {
+  if (sousRoleActuel() !== "president") return;
+  ouvrirModal(`
+    <h2>Modifier le seuil de double validation</h2>
+    <form id="form-modifier-seuil">
+      <div class="field-row">
+        <label>Nouveau seuil (GNF)</label>
+        <input type="number" name="seuil" min="0" value="${seuilDoubleValidation()}" required />
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Enregistrer</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-modifier-seuil").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      await updateDoc(doc(db, "associations", state.associationId), { seuil_double_validation: Number(fd.get("seuil")) });
+      state.association.seuil_double_validation = Number(fd.get("seuil"));
+      notifier("Seuil mis à jour.", "succes");
+      fermerModal();
+      renderDepenses();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+});
+
+// ---------- DÉCISIONS OFFICIELLES ----------
+
+const libellesStatutDecision = {
+  brouillon: "Brouillon",
+  soumise: "Soumise au président",
+  validee: "Validée, prête à publier",
+  publiee: "Publiée",
+};
+
+function renderDecisions() {
+  const container = document.getElementById("liste-decisions");
+  if (!container) return;
+  if (state.decisions.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucune décision pour l'instant.</p>`;
+    return;
+  }
+  const tri = [...state.decisions].sort((a, b) => (b.date_creation?.toMillis?.() || 0) - (a.date_creation?.toMillis?.() || 0));
+  container.innerHTML = tri.map((d) => `
+    <div class="entity-card" data-decision-id="${d.id}" style="cursor:pointer;">
+      <div class="entity-card-top">
+        <div>
+          <p class="entity-nom">${d.titre} <span style="font-weight:400; color:#777;">(${d.numero || ""})</span></p>
+          <p class="entity-sub">${formatDate(d.date_creation)}</p>
+        </div>
+        <span class="badge ${d.statut === "publiee" ? "badge-actif" : "badge-erreur"}">${libellesStatutDecision[d.statut] || d.statut}</span>
+      </div>
+    </div>
+  `).join("");
+  container.querySelectorAll("[data-decision-id]").forEach((card) => {
+    card.addEventListener("click", () => ouvrirModalDecision(card.dataset.decisionId));
+  });
+}
+
+document.getElementById("btn-nouvelle-decision")?.addEventListener("click", () => {
+  if (permission("decisions") !== "preparer") return;
+  ouvrirModal(`
+    <h2>Nouvelle décision</h2>
+    <form id="form-nouvelle-decision">
+      <div class="field-row">
+        <label>Titre</label>
+        <input type="text" name="titre" required placeholder="Ex : Fixation du calendrier des cotisations 2027" />
+      </div>
+      <div class="field-row">
+        <label>Contenu de la décision</label>
+        <textarea name="contenu" rows="4" required></textarea>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Enregistrer en brouillon</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-nouvelle-decision").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const numero = `DEC-${new Date().getFullYear()}-${String(state.decisions.length + 1).padStart(3, "0")}`;
+    try {
+      await addDoc(collection(db, "decisions"), {
+        association_id: state.associationId,
+        numero,
+        titre: fd.get("titre").trim(),
+        contenu: fd.get("contenu").trim(),
+        statut: "brouillon",
+        auteur_id: state.currentUser.uid,
+        auteur_nom: state.currentUser.nom,
+        date_creation: serverTimestamp(),
+      });
+      notifier("Décision enregistrée en brouillon.", "succes");
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+});
+
+function ouvrirModalDecision(decisionId) {
+  const d = state.decisions.find((x) => x.id === decisionId);
+  if (!d) return;
+  const sousRole = sousRoleActuel();
+
+  let blocSuivant = "";
+  if (d.statut === "brouillon" && sousRole === "secretaire_general") {
+    blocSuivant = `<button type="button" class="btn btn-primary" id="btn-soumettre-decision" style="width:100%;">Soumettre au président</button>`;
+  } else if (d.statut === "soumise" && sousRole === "president") {
+    blocSuivant = `<button type="button" class="btn btn-primary" id="btn-valider-decision" style="width:100%;">Valider cette décision</button>`;
+  } else if (d.statut === "validee" && sousRole === "president") {
+    blocSuivant = `<button type="button" class="btn btn-primary" id="btn-publier-decision" style="width:100%;">Publier la décision</button>`;
+  }
+
+  ouvrirModal(`
+    <h2>${d.titre} <span style="font-weight:400; color:#777; font-size:14px;">(${d.numero || ""})</span></h2>
+    <p class="subtitle-sm">${libellesStatutDecision[d.statut] || d.statut}</p>
+    <div class="field-row"><label>Contenu</label><p>${d.contenu}</p></div>
+    <div class="field-row"><label>Préparée par</label><p>${d.auteur_nom || "—"}</p></div>
+    <hr style="margin:14px 0; border:none; border-top:1px solid #eee;" />
+    ${blocSuivant}
+    <div class="modal-actions" style="margin-top:12px;">
+      <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Fermer</button>
+    </div>
+  `);
+
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+
+  document.getElementById("btn-soumettre-decision")?.addEventListener("click", async () => {
+    try {
+      await updateDoc(doc(db, "decisions", decisionId), { statut: "soumise", date_soumission: serverTimestamp() });
+      notifier("Décision soumise au président.", "succes");
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+
+  document.getElementById("btn-valider-decision")?.addEventListener("click", async () => {
+    try {
+      await updateDoc(doc(db, "decisions", decisionId), {
+        statut: "validee",
+        valide_par: state.currentUser.uid,
+        date_validation: serverTimestamp(),
+      });
+      notifier("Décision validée.", "succes");
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+
+  document.getElementById("btn-publier-decision")?.addEventListener("click", async () => {
+    try {
+      await updateDoc(doc(db, "decisions", decisionId), { statut: "publiee", date_publication: serverTimestamp() });
+      notifier("Décision publiée.", "succes");
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+}
+
+// ---------- DISCIPLINE (confidentiel : Président + Secrétaire général uniquement) ----------
+
+const libellesStatutDiscipline = {
+  signale: "Signalé",
+  instruction: "En instruction",
+  decision: "En attente de décision",
+  sanction: "Sanction appliquée",
+  cloture: "Clôturé",
+};
+
+function renderDiscipline() {
+  const container = document.getElementById("liste-discipline");
+  if (!container) return;
+  if (sousRoleActuel() === "gestionnaire_financier") {
+    container.innerHTML = `<p class="empty-state">Module confidentiel — non accessible depuis cet accès.</p>`;
+    return;
+  }
+  if (state.dossiersDiscipline.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucun dossier disciplinaire pour l'instant.</p>`;
+    return;
+  }
+  const tri = [...state.dossiersDiscipline].sort((a, b) => (b.date_creation?.toMillis?.() || 0) - (a.date_creation?.toMillis?.() || 0));
+  container.innerHTML = tri.map((d) => `
+    <div class="entity-card" data-discipline-id="${d.id}" style="cursor:pointer;">
+      <div class="entity-card-top">
+        <div>
+          <p class="entity-nom">${d.personne_nom}</p>
+          <p class="entity-sub">${formatDate(d.date_creation)}</p>
+        </div>
+        <span class="badge ${d.statut === "cloture" ? "badge-actif" : "badge-erreur"}">${libellesStatutDiscipline[d.statut] || d.statut}</span>
+      </div>
+    </div>
+  `).join("");
+  container.querySelectorAll("[data-discipline-id]").forEach((card) => {
+    card.addEventListener("click", () => ouvrirModalDiscipline(card.dataset.disciplineId));
+  });
+}
+
+document.getElementById("btn-nouveau-dossier-discipline")?.addEventListener("click", () => {
+  if (permission("discipline") !== "instruire") return;
+  const personnes = personnesReconnues();
+  if (personnes.length === 0) {
+    notifier("Aucune personne enregistrée dans une famille.", "erreur");
+    return;
+  }
+  ouvrirModal(`
+    <h2>Signaler un dossier disciplinaire</h2>
+    <p class="subtitle-sm">Ce dossier est confidentiel : seuls le président et vous y avez accès.</p>
+    <form id="form-nouveau-discipline">
+      <div class="field-row">
+        <label>Personne concernée</label>
+        <select name="personne" required>
+          <option value="">— Choisir —</option>
+          ${personnes.map((p) => `<option value="${p.nom}">${p.nom} (${p.familleNom})</option>`).join("")}
+        </select>
+      </div>
+      <div class="field-row">
+        <label>Motif du signalement</label>
+        <textarea name="description" rows="3" required></textarea>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Signaler</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-nouveau-discipline").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      await addDoc(collection(db, "disciplinary_cases"), {
+        association_id: state.associationId,
+        personne_nom: fd.get("personne"),
+        description: fd.get("description").trim(),
+        statut: "signale",
+        enregistre_par: state.currentUser.uid,
+        date_creation: serverTimestamp(),
+      });
+      notifier("Dossier signalé.", "succes");
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+});
+
+function ouvrirModalDiscipline(disciplineId) {
+  const d = state.dossiersDiscipline.find((x) => x.id === disciplineId);
+  if (!d) return;
+  const sousRole = sousRoleActuel();
+
+  let blocSuivant = "";
+  if (d.statut === "signale" && sousRole === "secretaire_general") {
+    blocSuivant = `<button type="button" class="btn btn-primary" id="btn-instruire-discipline" style="width:100%;">Démarrer l'instruction</button>`;
+  } else if (d.statut === "instruction" && sousRole === "secretaire_general") {
+    blocSuivant = `
+      <form id="form-transmettre-discipline">
+        <div class="field-row">
+          <label>Conclusions de l'instruction</label>
+          <textarea name="conclusions" rows="3" required></textarea>
+        </div>
+        <button type="submit" class="btn btn-primary" style="width:100%;">Transmettre au président pour décision</button>
+      </form>
+    `;
+  } else if (d.statut === "decision" && sousRole === "president") {
+    blocSuivant = `
+      <form id="form-decision-discipline">
+        <div class="field-row">
+          <label>Sanction (laisser vide si aucune sanction retenue)</label>
+          <textarea name="sanction" rows="3"></textarea>
+        </div>
+        <button type="submit" class="btn btn-primary" style="width:100%;">Trancher</button>
+      </form>
+    `;
+  } else if (d.statut === "sanction" && sousRole === "president") {
+    blocSuivant = `<button type="button" class="btn btn-primary" id="btn-cloturer-discipline" style="width:100%;">Clôturer le dossier</button>`;
+  }
+
+  ouvrirModal(`
+    <h2>${d.personne_nom}</h2>
+    <p class="subtitle-sm">${libellesStatutDiscipline[d.statut] || d.statut} · Confidentiel</p>
+    <div class="field-row"><label>Motif</label><p>${d.description}</p></div>
+    ${d.conclusions ? `<div class="field-row"><label>Conclusions de l'instruction</label><p>${d.conclusions}</p></div>` : ""}
+    ${d.sanction ? `<div class="field-row"><label>Sanction</label><p>${d.sanction}</p></div>` : ""}
+    <hr style="margin:14px 0; border:none; border-top:1px solid #eee;" />
+    ${blocSuivant}
+    <div class="modal-actions" style="margin-top:12px;">
+      <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Fermer</button>
+    </div>
+  `);
+
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+
+  document.getElementById("btn-instruire-discipline")?.addEventListener("click", async () => {
+    try {
+      await updateDoc(doc(db, "disciplinary_cases", disciplineId), { statut: "instruction", date_instruction: serverTimestamp() });
+      notifier("Instruction démarrée.", "succes");
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+
+  document.getElementById("form-transmettre-discipline")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      await updateDoc(doc(db, "disciplinary_cases", disciplineId), {
+        statut: "decision",
+        conclusions: fd.get("conclusions").trim(),
+        date_transmission: serverTimestamp(),
+      });
+      notifier("Transmis au président.", "succes");
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+
+  document.getElementById("form-decision-discipline")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const sanction = fd.get("sanction").trim();
+    try {
+      await updateDoc(doc(db, "disciplinary_cases", disciplineId), {
+        statut: sanction ? "sanction" : "cloture",
+        sanction: sanction || null,
+        decide_par: state.currentUser.uid,
+        date_decision: serverTimestamp(),
+      });
+      notifier(sanction ? "Sanction enregistrée." : "Dossier clôturé sans sanction.", "succes");
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+
+  document.getElementById("btn-cloturer-discipline")?.addEventListener("click", async () => {
+    try {
+      await updateDoc(doc(db, "disciplinary_cases", disciplineId), { statut: "cloture", date_cloture: serverTimestamp() });
+      notifier("Dossier clôturé.", "succes");
+      fermerModal();
+    } catch (err) {
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
 }
 
 document.querySelectorAll(".tab-btn").forEach((btn) => {
